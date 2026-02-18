@@ -1,0 +1,96 @@
+version: '3.8'
+
+services:
+  # Fusion OLAP Engine - REST API
+  fusion-rest:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fusion-rest
+    ports:
+      - "${FUSION_PORT:-9000}:9000"
+    environment:
+      - WARP_URL=${WARP_URL:-http://warp:8000}
+      - FUSION_ENV=${FUSION_ENV:-production}
+      - FUSION_LOG_LEVEL=${FUSION_LOG_LEVEL:-info}
+      - FUSION_MEMORY_LIMIT=${FUSION_MEMORY_LIMIT:-4GB}
+      - FUSION_THREADS=${FUSION_THREADS:-4}
+      - FUSION_CACHE_TTL=${FUSION_CACHE_TTL:-300}
+      - FUSION_CACHE_MAX_ENTRIES=${FUSION_CACHE_MAX_ENTRIES:-500}
+      - FUSION_CORS_ORIGINS=${FUSION_CORS_ORIGINS:-http://localhost:3000}
+      - FUSION_API_KEY=${FUSION_API_KEY}
+      - FUSION_RATE_LIMIT=${FUSION_RATE_LIMIT:-100/minute}
+    volumes:
+      - fusion-data:/app/data
+      - fusion-logs:/app/logs
+    networks:
+      - fusion-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 8G
+        reservations:
+          cpus: '1'
+          memory: 2G
+    depends_on:
+      warp:
+        condition: service_healthy
+
+  # Fusion OLAP Engine - MCP Server (optional)
+  fusion-mcp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fusion-mcp
+    environment:
+      - WARP_URL=${WARP_URL:-http://warp:8000}
+      - FUSION_ENV=${FUSION_ENV:-production}
+      - FUSION_LOG_LEVEL=${FUSION_LOG_LEVEL:-info}
+    command: ["fusion-mcp", "--warp-url", "${WARP_URL:-http://warp:8000}", "--auto-discover"]
+    volumes:
+      - fusion-data:/app/data
+      - fusion-logs:/app/logs
+    networks:
+      - fusion-net
+    restart: unless-stopped
+    profiles:
+      - mcp
+    depends_on:
+      - warp
+
+  # Warp REST API Gateway (external dependency)
+  warp:
+    image: yasinyaman/warp:latest
+    container_name: warp
+    ports:
+      - "${WARP_PORT:-8000}:8000"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - WARP_ENV=${WARP_ENV:-production}
+    networks:
+      - fusion-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  fusion-data:
+    driver: local
+  fusion-logs:
+    driver: local
+
+networks:
+  fusion-net:
+    driver: bridge
