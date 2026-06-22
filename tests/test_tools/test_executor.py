@@ -103,6 +103,20 @@ class TestToolExecutorSearchData:
         )
         assert "error" in result
 
+    def test_search_value_with_quote_is_safe(self, executor):
+        # A classic injection payload in the *value* is bound as a parameter,
+        # so it matches literally (no rows) instead of altering the query.
+        result = executor.search_data("test_db.users", "name", "Alice' OR '1'='1")
+        assert result["row_count"] == 0
+
+    def test_search_unknown_column_rejected(self, executor):
+        result = executor.execute(
+            "search_data",
+            {"table": "test_db.users", "filter_column": "ssn", "filter_value": "x"},
+        )
+        assert "error" in result
+        assert "Unknown column" in result["error"]
+
 
 class TestToolExecutorAggregateData:
     def test_aggregate_sum(self, executor):
@@ -126,6 +140,15 @@ class TestToolExecutorAggregateData:
              "agg_column": "amount", "agg_func": "EVIL"},
         )
         assert "error" in result
+
+    def test_aggregate_unknown_column_rejected(self, executor):
+        result = executor.execute(
+            "aggregate_data",
+            {"table": "test_db.orders", "group_by": "product",
+             "agg_column": "nonexistent", "agg_func": "SUM"},
+        )
+        assert "error" in result
+        assert "Unknown column" in result["error"]
 
 
 class TestToolExecutorViews:

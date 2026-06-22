@@ -20,11 +20,12 @@ Swagger UI available at: http://localhost:9000/docs
 """
 
 import argparse
+import hashlib
 import logging
 import signal
 import sys
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from typing import Any
 
 from fusion.config import config
 from fusion.utils.logger import setup_logging
@@ -43,6 +44,21 @@ def _get_executor():
     return _executor
 
 
+def _rate_limit_key(request: Any) -> str:
+    """Rate-limit per API key when present, else per client IP.
+
+    Keying on the API key avoids both X-Forwarded-For spoofing and unfair
+    throttling of many clients that share one NAT/proxy IP.
+    """
+    from slowapi.util import get_remote_address
+
+    api_key = request.headers.get("X-API-Key")
+    if api_key:
+        # Hash so the raw secret isn't used as an in-memory bucket key.
+        return "key:" + hashlib.sha256(api_key.encode()).hexdigest()[:16]
+    return get_remote_address(request)
+
+
 def create_app(
     engine: Any = None,
     executor: Any = None,
@@ -59,7 +75,6 @@ def create_app(
     from pydantic import BaseModel
     from slowapi import Limiter, _rate_limit_exceeded_handler
     from slowapi.errors import RateLimitExceeded
-    from slowapi.util import get_remote_address
 
     from fusion.exceptions import GuardrailViolation, QueryError, SchemaError
     from fusion.middleware.auth import AuthMiddleware
@@ -94,7 +109,7 @@ def create_app(
         name: str
 
     # --- Rate Limiter ---
-    limiter = Limiter(key_func=get_remote_address, default_limits=[config.RATE_LIMIT])
+    limiter = Limiter(key_func=_rate_limit_key, default_limits=[config.RATE_LIMIT])
     
     # --- Lifespan (startup/shutdown) ---
     @asynccontextmanager
@@ -136,7 +151,7 @@ def create_app(
     
     # Add rate limiter to app state
     app.state.limiter = limiter
-    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
     # --- Middleware Stack (order matters) ---
     # 1. Structured logging (outermost - logs everything)
@@ -350,7 +365,13 @@ def create_app(
     # --- Admin/Debug ---
     @app.get("/debug/config")
     def debug_config():
-        """Get current configuration (admin only, requires auth)."""
+        """Get current configuration (admin only, requires auth).
+
+        Disabled in production by default (exposes internal topology); enable
+        with FUSION_DEBUG_ENDPOINTS=true.
+        """
+        if not config.debug_endpoints_enabled():
+            raise HTTPException(status_code=404, detail="Not found")
         return {
             "environment": config.ENV,
             "warp_url": config.WARP_URL,
@@ -417,6 +438,14 @@ def main():
     )
     args = parser.parse_args()
     
+    # Fail fast on fatal misconfiguration (e.g. production without an API key)
+    config_errors = config.validate()
+    if config_errors:
+        for err in config_errors:
+            logger.error("Configuration error: %s", err)
+        logger.error("Refusing to start. Fix the above and retry.")
+        sys.exit(1)
+
     # Use config values (can be overridden by CLI args)
     host = args.host or config.HOST
     port = args.port or config.PORT
@@ -428,6 +457,14 @@ def main():
 
     global _executor, _engine, _backup_manager
 
+    # EXPORT DATABASE backups need DuckDB external access, which is off by default.
+    if config.BACKUP_ENABLED and not config.DUCKDB_EXTERNAL_ACCESS:
+        logger.warning(
+            "Backups are enabled but FUSION_DUCKDB_EXTERNAL_ACCESS is false; "
+            "EXPORT DATABASE will fail. Set FUSION_DUCKDB_EXTERNAL_ACCESS=true "
+            "to allow backups (widens the attack surface)."
+        )
+
     # Initialize engine
     _engine = OLAPEngine(
         database=config.DUCKDB_DATABASE,
@@ -435,6 +472,9 @@ def main():
         threads=config.DUCKDB_THREADS,
         cache_max_entries=config.CACHE_MAX_ENTRIES,
         cache_ttl=config.CACHE_TTL,
+        enable_external_access=config.DUCKDB_EXTERNAL_ACCESS,
+        max_temp_directory_size=config.DUCKDB_MAX_TEMP_DIR_SIZE or None,
+        max_ingest_rows=config.MAX_INGEST_ROWS,
     )
 
     # Connect Warp source(s)

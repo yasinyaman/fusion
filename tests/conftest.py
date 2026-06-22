@@ -30,9 +30,11 @@ def engine_with_data(engine):
     })
 
     engine.execute_raw("CREATE SCHEMA IF NOT EXISTS test_db")
-    with engine._lock:
-        engine._conn.execute("CREATE TABLE test_db.users AS SELECT * FROM users")
-        engine._conn.execute("CREATE TABLE test_db.orders AS SELECT * FROM orders")
+    # Use the engine's register-based loader so the fixture works under the
+    # default enable_external_access=FALSE latch (a plain `SELECT * FROM users`
+    # replacement scan would be rejected).
+    engine._materialize_dataframe("test_db.users", users)
+    engine._materialize_dataframe("test_db.orders", orders)
 
     engine.catalog.register_source("test_db", "test", {
         "users": {

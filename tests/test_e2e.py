@@ -6,7 +6,6 @@ complete user scenarios including lazy loading, pushdown, caching,
 materialized views, and error handling.
 """
 
-import json
 from unittest.mock import MagicMock, patch
 
 import pandas as pd

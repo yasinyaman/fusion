@@ -1,6 +1,6 @@
 """Tests for query pushdown — routing queries to source database."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -9,7 +9,7 @@ from fusion import OLAPEngine
 from fusion.catalog import SchemaCatalog
 from fusion.connectors.base import BaseConnector
 from fusion.connectors.warp import WarpConnector
-from fusion.strategy import FetchPlan, FetchStrategy, TableTarget
+from fusion.strategy import FetchPlan, FetchStrategy
 from fusion.tools.executor import ToolExecutor
 
 
@@ -290,7 +290,7 @@ class TestEnginePushdown:
             "id": [1], "amount": [10.0],
         })
 
-        result = engine.sql("SELECT * FROM warp_main.orders")
+        engine.sql("SELECT * FROM warp_main.orders")
         mock_connector.execute_query.assert_not_called()
         mock_connector.fetch_data.assert_called_once()
 

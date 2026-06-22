@@ -37,6 +37,28 @@ class ToolExecutor:
         self._engine = engine
         self._mv = MaterializedViewManager(engine)
 
+    def _validate_columns_in_catalog(self, table: str, columns: list) -> None:
+        """Verify a table and its referenced columns exist in the catalog.
+
+        This is defense-in-depth on top of the identifier regex (which already
+        blocks SQL injection in names). Materialized views (mv_*) live only in
+        DuckDB, not the catalog, so they are skipped here and rely on the regex.
+        Raises SchemaError for an unknown table, QueryError for an unknown column.
+        """
+        if table.startswith("mv_"):
+            return
+        info = self._engine.catalog.get_table_info(table)  # raises SchemaError if unknown
+        known = {c["name"] for c in info.get("columns", [])}
+        if not known:
+            # Schema could not be inferred; let the database reject bad columns.
+            return
+        for col in columns:
+            if col not in known:
+                raise QueryError(
+                    f"Unknown column '{col}' in table '{table}'. "
+                    f"Available columns: {', '.join(sorted(known))}"
+                )
+
     def execute(self, tool_name: str, arguments: dict) -> dict:
         """Execute a tool by name with given arguments.
 
@@ -135,6 +157,7 @@ class ToolExecutor:
         """
         _validate_identifier(table, "table name")
         _validate_identifier(filter_column, "column name")
+        self._validate_columns_in_catalog(table, [filter_column])
         limit = min(max(1, limit), MAX_RESULT_ROWS)
 
         # Try pushdown: use connector.fetch_data_filtered if table not loaded
@@ -144,21 +167,16 @@ class ToolExecutor:
         if pushdown_result is not None:
             return pushdown_result
 
-        # Fallback: DuckDB path (auto-loads table if needed)
-        if "%" in filter_value:
-            sql = (
-                f"SELECT * FROM {table} "
-                f"WHERE CAST({filter_column} AS VARCHAR) LIKE '{self._escape_value(filter_value)}' "
-                f"LIMIT {limit}"
-            )
-        else:
-            sql = (
-                f"SELECT * FROM {table} "
-                f"WHERE CAST({filter_column} AS VARCHAR) = '{self._escape_value(filter_value)}' "
-                f"LIMIT {limit}"
-            )
+        # Fallback: DuckDB path (auto-loads table if needed). The filter value is
+        # bound as a parameter (?) — never interpolated into the SQL string.
+        operator = "LIKE" if "%" in filter_value else "="
+        sql = (
+            f"SELECT * FROM {table} "
+            f"WHERE CAST({filter_column} AS VARCHAR) {operator} ? "
+            f"LIMIT {limit}"
+        )
 
-        result = self._engine.sql(sql)
+        result = self._engine.sql(sql, params=[filter_value])
         return self._format_result(result)
 
     def aggregate_data(
@@ -176,6 +194,7 @@ class ToolExecutor:
         _validate_identifier(table, "table name")
         _validate_identifier(group_by, "group_by column")
         _validate_identifier(agg_column, "agg_column")
+        self._validate_columns_in_catalog(table, [group_by, agg_column])
 
         agg_func_upper = agg_func.upper()
         if agg_func_upper not in ALLOWED_AGG_FUNCS:

@@ -24,6 +24,18 @@ class Config:
     DUCKDB_DATABASE: str = os.getenv("FUSION_DATABASE", ":memory:")
     DUCKDB_MEMORY_LIMIT: str = os.getenv("FUSION_MEMORY_LIMIT", "4GB")
     DUCKDB_THREADS: int = int(os.getenv("FUSION_THREADS", "4"))
+    # Allow DuckDB to touch the local filesystem/network (read_csv, ATTACH,
+    # COPY, EXPORT DATABASE, httpfs). Off by default for security. Turn on only
+    # if you rely on EXPORT DATABASE backups and accept the larger attack surface.
+    DUCKDB_EXTERNAL_ACCESS: bool = (
+        os.getenv("FUSION_DUCKDB_EXTERNAL_ACCESS", "false").lower() == "true"
+    )
+    # Cap on-disk spill for queries that exceed memory_limit (e.g. heavy
+    # federated joins). Empty = use DuckDB's default (unbounded).
+    DUCKDB_MAX_TEMP_DIR_SIZE: str = os.getenv("FUSION_MAX_TEMP_DIRECTORY_SIZE", "")
+    # Max rows pulled from a source when materializing a table in DuckDB.
+    # 0 = unlimited. Guards against OOM on the non-pushdown fallback path.
+    MAX_INGEST_ROWS: int = int(os.getenv("FUSION_MAX_INGEST_ROWS", "0"))
     
     # Cache
     CACHE_TTL: int = int(os.getenv("FUSION_CACHE_TTL", "300"))
@@ -73,10 +85,55 @@ class Config:
         """Check if running in development environment."""
         return cls.ENV == "development"
     
+    # Debug endpoints (e.g. /debug/config) expose internal topology (warp_url,
+    # CORS, ...). "" = auto (on outside production, off in production).
+    DEBUG_ENDPOINTS: str = os.getenv("FUSION_DEBUG_ENDPOINTS", "")
+
     @classmethod
     def requires_auth(cls) -> bool:
         """Check if API key authentication is required."""
         return bool(cls.API_KEY)
+
+    @classmethod
+    def debug_endpoints_enabled(cls) -> bool:
+        """Whether admin/debug endpoints should be served.
+
+        Off in production unless FUSION_DEBUG_ENDPOINTS is explicitly set true.
+        """
+        if cls.DEBUG_ENDPOINTS:
+            return cls.DEBUG_ENDPOINTS.lower() == "true"
+        return not cls.is_production()
+
+    # API keys that must never be accepted in production (placeholders/examples)
+    PLACEHOLDER_API_KEYS = frozenset({
+        "",
+        "changeme",
+        "change-me",
+        "your-api-key",
+        "your-secure-api-key-here-change-in-production",
+    })
+
+    @classmethod
+    def validate(cls) -> list[str]:
+        """Return a list of fatal misconfigurations for the current environment.
+
+        Production must have a real API key and must not silently run with
+        authentication disabled. Returns an empty list when configuration is OK.
+        """
+        errors: list[str] = []
+        if cls.is_production():
+            if cls.API_KEY.strip() in cls.PLACEHOLDER_API_KEYS:
+                errors.append(
+                    "FUSION_API_KEY is empty or a placeholder in production. "
+                    "Set a strong, unique API key (authentication would otherwise "
+                    "be disabled, leaving the API open)."
+                )
+            if "*" in cls.CORS_ORIGINS:
+                errors.append(
+                    "FUSION_CORS_ORIGINS contains '*' in production. "
+                    "Specify explicit allowed origins."
+                )
+        return errors
 
 
 # Singleton instance

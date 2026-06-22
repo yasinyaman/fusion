@@ -96,6 +96,94 @@ class TestCacheEndpoint:
         assert isinstance(resp.json(), dict)
 
 
+class TestDebugEndpoint:
+    def test_debug_config_available_outside_production(self, rest_client, monkeypatch):
+        from fusion.config import Config
+        monkeypatch.setattr(Config, "ENV", "development")
+        monkeypatch.setattr(Config, "DEBUG_ENDPOINTS", "")
+        resp = rest_client.get("/debug/config")
+        assert resp.status_code == 200
+        assert "environment" in resp.json()
+
+    def test_debug_config_hidden_in_production(self, rest_client, monkeypatch):
+        from fusion.config import Config
+        monkeypatch.setattr(Config, "ENV", "production")
+        monkeypatch.setattr(Config, "DEBUG_ENDPOINTS", "")
+        resp = rest_client.get("/debug/config")
+        assert resp.status_code == 404
+
+    def test_debug_config_force_enabled_in_production(self, rest_client, monkeypatch):
+        from fusion.config import Config
+        monkeypatch.setattr(Config, "ENV", "production")
+        monkeypatch.setattr(Config, "DEBUG_ENDPOINTS", "true")
+        resp = rest_client.get("/debug/config")
+        assert resp.status_code == 200
+
+
+class TestAuthMiddleware:
+    """API-key auth is enforced when FUSION_API_KEY is set."""
+
+    def test_open_when_key_unset(self, rest_client, monkeypatch):
+        from fusion.config import Config
+        monkeypatch.setattr(Config, "API_KEY", "")
+        assert rest_client.get("/sources").status_code == 200
+
+    def test_missing_key_rejected(self, rest_client, monkeypatch):
+        from fusion.config import Config
+        monkeypatch.setattr(Config, "API_KEY", "topsecret")
+        assert rest_client.get("/sources").status_code == 401
+
+    def test_wrong_key_rejected(self, rest_client, monkeypatch):
+        from fusion.config import Config
+        monkeypatch.setattr(Config, "API_KEY", "topsecret")
+        resp = rest_client.get("/sources", headers={"X-API-Key": "nope"})
+        assert resp.status_code == 403
+
+    def test_correct_key_allowed(self, rest_client, monkeypatch):
+        from fusion.config import Config
+        monkeypatch.setattr(Config, "API_KEY", "topsecret")
+        resp = rest_client.get("/sources", headers={"X-API-Key": "topsecret"})
+        assert resp.status_code == 200
+
+    def test_health_excluded_from_auth(self, rest_client, monkeypatch):
+        from fusion.config import Config
+        monkeypatch.setattr(Config, "API_KEY", "topsecret")
+        assert rest_client.get("/health").status_code == 200
+
+
+class TestRateLimitKey:
+    """The rate-limit bucket key is per-API-key (anti-spoof / anti-NAT)."""
+
+    def _req(self, api_key=None, host="9.9.9.9"):
+        from unittest.mock import MagicMock
+
+        req = MagicMock()
+        req.headers = {"X-API-Key": api_key} if api_key else {}
+        req.client.host = host
+        return req
+
+    def test_uses_api_key_when_present(self):
+        from fusion.tools.rest_server import _rate_limit_key
+
+        key = _rate_limit_key(self._req(api_key="secret-abc"))
+        assert key.startswith("key:")
+        # Stable for the same key, and doesn't leak the raw secret
+        assert _rate_limit_key(self._req(api_key="secret-abc")) == key
+        assert "secret-abc" not in key
+
+    def test_distinguishes_api_keys(self):
+        from fusion.tools.rest_server import _rate_limit_key
+
+        assert _rate_limit_key(self._req(api_key="aaa")) != _rate_limit_key(
+            self._req(api_key="bbb")
+        )
+
+    def test_falls_back_to_client_ip(self):
+        from fusion.tools.rest_server import _rate_limit_key
+
+        assert _rate_limit_key(self._req(host="1.2.3.4")) == "1.2.3.4"
+
+
 class TestViewsEndpoint:
     def test_list_views(self, rest_client):
         resp = rest_client.get("/views")

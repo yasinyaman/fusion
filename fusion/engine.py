@@ -35,10 +35,31 @@ class OLAPEngine:
         memory_limit: str = "4GB",
         cache_max_entries: int = 500,
         cache_ttl: int = 300,
+        enable_external_access: bool = False,
+        max_temp_directory_size: Optional[str] = None,
+        max_ingest_rows: int = 0,
     ):
         self._conn = duckdb.connect(database)
         self._conn.execute(f"SET threads TO {threads}")
         self._conn.execute(f"SET memory_limit = '{memory_limit}'")
+
+        # Cap on-disk spill so a runaway query can't fill the disk.
+        if max_temp_directory_size:
+            self._conn.execute(
+                f"SET max_temp_directory_size = '{max_temp_directory_size}'"
+            )
+        # Max rows to pull from a source when materializing a table (0 = no cap).
+        self._max_ingest_rows = max_ingest_rows
+
+        # Security: disable DuckDB's access to the local filesystem and network
+        # by default. This blocks read_csv/read_parquet/glob/ATTACH/COPY against
+        # files and httpfs URLs — the main way a crafted SELECT could exfiltrate
+        # local files or trigger SSRF. It is a one-way latch and cannot be
+        # re-enabled at runtime. Enable only if you need EXPORT DATABASE backups.
+        self._external_access = enable_external_access
+        if not enable_external_access:
+            self._conn.execute("SET enable_external_access = FALSE")
+
         self._lock = threading.Lock()
 
         self.cache = QueryCache(max_entries=cache_max_entries, default_ttl=cache_ttl)
@@ -130,11 +151,8 @@ class OLAPEngine:
         full_name = f"{source_name}.{table_name}"
         logger.info("On-demand loading: %s", full_name)
 
-        df = connector.fetch_data(table_name)
-        with self._lock:
-            self._conn.execute(
-                f"CREATE OR REPLACE TABLE {full_name} AS SELECT * FROM df"
-            )
+        df = connector.fetch_data(table_name, max_rows=self._max_ingest_rows or None)
+        self._materialize_dataframe(full_name, df)
 
         # Update catalog row count
         row_count = len(df)
@@ -147,6 +165,24 @@ class OLAPEngine:
 
         self.catalog.mark_loaded(full_name)
         logger.info("On-demand load complete: %s (%d rows)", full_name, row_count)
+
+    def _materialize_dataframe(self, full_name: str, df: Any) -> None:
+        """Materialize a pandas DataFrame as a DuckDB table.
+
+        Uses an explicit register/unregister cycle instead of a replacement
+        scan (``SELECT * FROM df``). Replacement scans of Python locals require
+        DuckDB external access, which is disabled by default for security, so the
+        registration path is what keeps table loading working under that latch.
+        """
+        tmp = "_fusion_df_ingest"
+        with self._lock:
+            self._conn.register(tmp, df)
+            try:
+                self._conn.execute(
+                    f"CREATE OR REPLACE TABLE {full_name} AS SELECT * FROM {tmp}"
+                )
+            finally:
+                self._conn.unregister(tmp)
 
     def disconnect_source(self, name: str) -> None:
         """Disconnect a data source and remove its data from DuckDB."""
@@ -166,6 +202,7 @@ class OLAPEngine:
         use_cache: bool = True,
         cache_ttl: Optional[int] = None,
         auto_load: bool = True,
+        params: Optional[list] = None,
     ) -> QueryResult:
         """Execute a SQL query with guardrails and optional caching.
 
@@ -174,13 +211,16 @@ class OLAPEngine:
             use_cache: Whether to use query cache
             cache_ttl: Cache TTL in seconds (None = default)
             auto_load: If True, auto-detect and load referenced tables on demand
+            params: Values to bind to ``?`` placeholders in the query. When
+                provided, the query always runs on DuckDB (pushdown is skipped,
+                since ``?`` binding is DuckDB-specific).
         """
         # Validate through guardrails
         self.guardrails.validate(query)
 
         # Check cache first (before any loading or pushdown)
         if use_cache:
-            cached = self.cache.get(query)
+            cached = self.cache.get(query, params)
             if cached is not None:
                 logger.debug("Cache hit for query: %s", query[:80])
                 return QueryResult(
@@ -198,8 +238,10 @@ class OLAPEngine:
             strategy = FetchStrategy(self.catalog)
             plan = strategy.plan_for_sql(query)
 
-            # Try pushdown: send query to source database directly
-            if plan.pushdown_eligible:
+            # Try pushdown: send query to source database directly.
+            # Skipped for parameterized queries — ``?`` placeholders are bound by
+            # DuckDB and may not match the source database's binding style.
+            if params is None and plan.pushdown_eligible and plan.source_name:
                 connector = self._connectors.get(plan.source_name)
                 if connector and connector.supports_pushdown:
                     try:
@@ -221,9 +263,12 @@ class OLAPEngine:
         try:
             start = time.perf_counter()
             with self._lock:
-                result = self._conn.execute(query)
-                columns = [desc[0] for desc in result.description]
-                data = result.fetchall()
+                if params is not None:
+                    cursor = self._conn.execute(query, params)
+                else:
+                    cursor = self._conn.execute(query)
+                columns = [desc[0] for desc in cursor.description]
+                data = cursor.fetchall()
             elapsed_ms = (time.perf_counter() - start) * 1000
         except duckdb.Error as e:
             raise QueryError(f"Query execution failed: {e}") from e
@@ -238,7 +283,7 @@ class OLAPEngine:
 
         # Store in cache
         if use_cache:
-            self.cache.put(query, query_result, ttl=cache_ttl)
+            self.cache.put(query, query_result, ttl=cache_ttl, params=params)
 
         logger.debug("Query executed in %.1fms (%d rows)", elapsed_ms, len(data))
         return query_result
@@ -310,11 +355,10 @@ class OLAPEngine:
 
                     # Only re-fetch tables that are already loaded
                     if self.catalog.is_loaded(full_name):
-                        df = connector.fetch_data(table_name)
-                        with self._lock:
-                            self._conn.execute(
-                                f"CREATE OR REPLACE TABLE {full_name} AS SELECT * FROM df"
-                            )
+                        df = connector.fetch_data(
+                            table_name, max_rows=self._max_ingest_rows or None
+                        )
+                        self._materialize_dataframe(full_name, df)
                         row_count = len(df)
 
                     tables_meta[table_name] = {
@@ -375,10 +419,10 @@ class OLAPEngine:
                 continue
             try:
                 with self._lock:
-                    count = self._conn.execute(
+                    row = self._conn.execute(
                         f"SELECT COUNT(*) FROM {table}"
-                    ).fetchone()[0]
-                result[table] = count
+                    ).fetchone()
+                result[table] = row[0] if row else -1
             except Exception:
                 result[table] = -1
         return result

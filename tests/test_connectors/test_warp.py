@@ -1,13 +1,11 @@
 """Tests for WarpConnector (mocked HTTP)."""
 
-import json
 from unittest.mock import MagicMock, patch
 
-import pandas as pd
 import pytest
 import requests
 
-from fusion.connectors.warp import WarpConnector
+from fusion.connectors.warp import WarpConnector, _validate_base_url
 from fusion.exceptions import ConnectionError, QueryError
 
 
@@ -134,6 +132,26 @@ class TestWarpConnector:
 
         df = conn.fetch_data("items")
         assert len(df) == 3
+
+    def test_fetch_data_respects_max_rows(self, warp_config, mock_session):
+        config = {**warp_config, "page_size": 2}
+
+        page1 = MagicMock()
+        page1.raise_for_status = MagicMock()
+        page1.json.return_value = [{"id": 1}, {"id": 2}]
+
+        page2 = MagicMock()
+        page2.raise_for_status = MagicMock()
+        page2.json.return_value = [{"id": 3}, {"id": 4}]
+
+        mock_session.get.side_effect = [page1, page2]
+
+        conn = WarpConnector("test", config)
+        conn._session = mock_session
+        conn._connected = True
+
+        df = conn.fetch_data("items", max_rows=3)
+        assert len(df) == 3  # truncated at the ingest cap
 
     def test_fetch_data_not_connected(self, warp_config):
         conn = WarpConnector("test", warp_config)
@@ -384,3 +402,44 @@ class TestDiscoverDatabases:
 
         WarpConnector.discover_databases("http://localhost:8080", api_key="secret")
         assert session.headers["Authorization"] == "Bearer secret"
+
+
+class TestWarpSSRFGuard:
+    """SSRF defense-in-depth on the operator-supplied base_url."""
+
+    def test_rejects_non_http_scheme(self):
+        with pytest.raises(ConnectionError):
+            _validate_base_url("file:///etc/passwd")
+        with pytest.raises(ConnectionError):
+            _validate_base_url("ftp://example.com")
+
+    def test_rejects_metadata_ip(self):
+        with pytest.raises(ConnectionError):
+            _validate_base_url("http://169.254.169.254")
+
+    def test_rejects_metadata_hostname(self):
+        with pytest.raises(ConnectionError):
+            _validate_base_url("http://metadata.google.internal/computeMetadata")
+
+    def test_allows_loopback_and_private(self):
+        # Warp legitimately runs on these — must not raise
+        _validate_base_url("http://localhost:8080")
+        _validate_base_url("http://127.0.0.1:8000")
+        _validate_base_url("http://10.0.0.5:8000")
+
+    def test_connector_init_rejects_metadata(self):
+        with pytest.raises(ConnectionError):
+            WarpConnector("evil", {
+                "type": "warp",
+                "base_url": "http://169.254.169.254",
+                "database": "x",
+            })
+
+    def test_discover_databases_rejects_metadata(self):
+        with pytest.raises(ConnectionError):
+            WarpConnector.discover_databases("http://169.254.169.254")
+
+    def test_session_does_not_follow_redirects(self, warp_config, mock_session):
+        conn = WarpConnector("test", warp_config)
+        conn._get_session()
+        assert mock_session.max_redirects == 0

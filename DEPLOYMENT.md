@@ -39,12 +39,15 @@ Production-ready deployment guide for Fusion.
 Copy and edit production config:
 
 ```bash
-cp .env.production .env
+cp .env.production.example .env
 ```
 
 Edit `.env` and set:
-- `FUSION_API_KEY` — Strong API key (required)
+- `FUSION_API_KEY` — Strong API key (required; the server refuses to start in
+  production if this is empty or left at the placeholder value)
 - `FUSION_CORS_ORIGINS` — Comma-separated allowed origins
+- `FUSION_DUCKDB_EXTERNAL_ACCESS` — Leave `false` unless you need EXPORT
+  DATABASE backups; `true` lets DuckDB read local files / the network
 - `WARP_URL` — Warp API endpoint
 
 ### 2. Build and Run
@@ -91,7 +94,7 @@ open http://localhost:9000/docs
 | `WARP_TIMEOUT` | `30` | Warp request timeout (seconds) |
 | `WARP_MAX_RETRIES` | `3` | Max retry attempts |
 
-See `.env.production` for full list.
+See `.env.production.example` for full list.
 
 ## API Usage
 
@@ -268,5 +271,4 @@ DuckDB: Out of Memory Error
 ## Support
 
 - **Documentation:** [README.md](README.md)
-- **Architecture:** [CLAUDE.md](CLAUDE.md)
 - **Issues:** GitHub Issues (if open source)

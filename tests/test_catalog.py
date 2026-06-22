@@ -2,7 +2,6 @@
 
 import pytest
 
-from fusion.catalog import SchemaCatalog
 from fusion.exceptions import SchemaError
 
 

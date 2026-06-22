@@ -67,3 +67,22 @@ class TestQueryCache:
     def test_whitespace_normalization(self, cache):
         cache.put("SELECT  *  FROM  users", "result")
         assert cache.get("SELECT * FROM users") == "result"
+
+    def test_params_produce_distinct_keys(self, cache):
+        sql = "SELECT * FROM users WHERE name = ?"
+        cache.put(sql, "alice_result", params=["alice"])
+        assert cache.get(sql, params=["alice"]) == "alice_result"
+        # Different param value must be a cache miss, not a wrong hit
+        assert cache.get(sql, params=["bob"]) is None
+
+    def test_params_are_case_sensitive(self, cache):
+        sql = "SELECT * FROM users WHERE name = ?"
+        cache.put(sql, "lower", params=["alice"])
+        cache.put(sql, "upper", params=["ALICE"])
+        assert cache.get(sql, params=["alice"]) == "lower"
+        assert cache.get(sql, params=["ALICE"]) == "upper"
+
+    def test_param_query_does_not_collide_with_paramless(self, cache):
+        sql = "SELECT * FROM users WHERE name = ?"
+        cache.put(sql, "bound", params=["alice"])
+        assert cache.get(sql) is None

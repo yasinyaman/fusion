@@ -18,8 +18,14 @@ class BaseConnector(ABC):
         """Establish connection to the data source."""
 
     @abstractmethod
-    def fetch_data(self, table: str) -> pd.DataFrame:
-        """Fetch all data from a table/collection as a DataFrame."""
+    def fetch_data(self, table: str, max_rows: int | None = None) -> pd.DataFrame:
+        """Fetch data from a table/collection as a DataFrame.
+
+        Args:
+            table: Table name.
+            max_rows: Stop after this many rows (None = no limit). Guards against
+                pulling an unbounded result set into memory.
+        """
 
     @abstractmethod
     def get_schema(self) -> dict[str, dict]:
@@ -53,7 +59,7 @@ class BaseConnector(ABC):
             columns: Column names to select (None = all)
             limit: Max rows to fetch
         """
-        df = self.fetch_data(table)
+        df = self.fetch_data(table, max_rows=limit)
         if filters:
             for col, val in filters.items():
                 if col in df.columns:

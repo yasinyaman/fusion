@@ -18,9 +18,9 @@ class QueryCache:
         self._hits = 0
         self._misses = 0
 
-    def get(self, sql: str) -> Optional[Any]:
+    def get(self, sql: str, params: Optional[Any] = None) -> Optional[Any]:
         """Get cached result for a query. Returns None on cache miss."""
-        key = self._hash_query(sql)
+        key = self._hash_query(sql, params)
         with self._lock:
             if key not in self._cache:
                 self._misses += 1
@@ -39,9 +39,11 @@ class QueryCache:
             self._hits += 1
             return entry["result"]
 
-    def put(self, sql: str, result: Any, ttl: Optional[int] = None) -> None:
+    def put(
+        self, sql: str, result: Any, ttl: Optional[int] = None, params: Optional[Any] = None
+    ) -> None:
         """Store a query result in cache."""
-        key = self._hash_query(sql)
+        key = self._hash_query(sql, params)
         ttl = ttl if ttl is not None else self._default_ttl
 
         with self._lock:
@@ -88,8 +90,12 @@ class QueryCache:
             }
 
     @staticmethod
-    def _hash_query(sql: str) -> str:
-        """Normalize and hash a SQL query for cache key."""
+    def _hash_query(sql: str, params: Optional[Any] = None) -> str:
+        """Normalize and hash a SQL query (plus bound params) for cache key."""
         # Normalize whitespace and case for consistent caching
         normalized = " ".join(sql.split()).strip().upper()
+        if params:
+            # Params are appended case-sensitively so that, e.g., a filter value
+            # of 'alice' and 'ALICE' do not collide on the same cache entry.
+            normalized += "\x00PARAMS\x00" + repr(params)
         return hashlib.sha256(normalized.encode()).hexdigest()

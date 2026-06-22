@@ -1,0 +1,50 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+.venv/
+venv/
+env/
+
+# Environment files
+.env
+.env.*
+!.env.example
+!.env.production.example
+
+# DuckDB
+*.duckdb
+*.duckdb.wal
+
+# Caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Python
+*.pyc
+.DS_Store
+*.swp
+*.swo
+
+# Testing
+htmlcov/
+.coverage
+coverage.xml
+
+# Logs
+logs/
+*.log
+
+# Data
+data/
+backups/
+
+# Tool history / scratch
+.quackstack_history.json
+

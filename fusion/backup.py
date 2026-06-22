@@ -4,11 +4,14 @@ import logging
 import shutil
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from fusion.config import config
+
+if TYPE_CHECKING:
+    from fusion.engine import OLAPEngine
 
 logger = logging.getLogger(__name__)
 
@@ -99,8 +102,9 @@ class BackupManager:
         backup_file = self.backup_path / f"fusion_backup_{timestamp}.duckdb"
         
         # Get current database path
-        db_path = self._engine._conn.execute("SELECT current_database()").fetchone()[0]
-        
+        row = self._engine._conn.execute("SELECT current_database()").fetchone()
+        db_path = row[0] if row else ""
+
         if db_path == ":memory:":
             # For in-memory databases, export to file
             logger.info(f"Creating backup of in-memory database to {backup_file}")
@@ -127,8 +131,9 @@ class BackupManager:
         if not backup_file.exists():
             raise FileNotFoundError(f"Backup file not found: {backup_file}")
         
-        db_path = self._engine._conn.execute("SELECT current_database()").fetchone()[0]
-        
+        row = self._engine._conn.execute("SELECT current_database()").fetchone()
+        db_path = row[0] if row else ""
+
         if db_path == ":memory:":
             raise ValueError("Cannot restore to in-memory database. Use IMPORT DATABASE instead.")
         

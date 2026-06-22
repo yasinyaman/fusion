@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: Install dependencies (locked)
+        run: uv sync --all-extras --frozen
+
+      - name: Lint (ruff)
+        run: uv run ruff check fusion/ tests/
+
+      - name: Run tests (with coverage gate)
+        run: uv run pytest tests/ -v --cov=fusion --cov-report=term-missing
+
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Install dependencies (locked)
+        run: uv sync --all-extras --frozen
+
+      - name: Type check (mypy)
+        run: uv run mypy fusion/
+
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Audit dependencies (pip-audit)
+        run: |
+          uv export --frozen --no-dev --no-emit-project --no-hashes -o audit-requirements.txt
+          uvx pip-audit -r audit-requirements.txt --no-deps

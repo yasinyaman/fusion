@@ -1,5 +1,7 @@
 """SQL guardrails for blocking destructive queries."""
 
+import re
+
 import sqlglot
 from sqlglot import exp
 
@@ -15,6 +17,26 @@ _DANGEROUS_KEYWORDS = {
     "DROP", "DELETE", "INSERT", "UPDATE", "ALTER",
     "TRUNCATE", "GRANT", "REVOKE", "CREATE", "REPLACE",
 }
+
+# DuckDB functions that reach the local filesystem, network, or extension
+# loader. These parse as ordinary functions inside an otherwise-valid SELECT
+# (e.g. `SELECT * FROM read_csv('/etc/passwd')`), so the statement-type
+# allowlist alone does not catch them. This is defense-in-depth on top of the
+# engine's `enable_external_access=FALSE` latch.
+_FORBIDDEN_FUNCTIONS = frozenset({
+    "read_csv", "read_csv_auto", "read_parquet", "parquet_scan",
+    "read_json", "read_json_auto", "read_json_objects", "read_ndjson",
+    "read_ndjson_auto", "read_ndjson_objects", "read_text", "read_blob",
+    "glob", "sniff_csv", "delta_scan", "iceberg_scan", "iceberg_metadata",
+    "iceberg_snapshots", "postgres_scan", "postgres_query", "mysql_scan",
+    "mysql_query", "sqlite_scan", "install", "load",
+})
+
+# Matches a forbidden function name immediately followed by `(`, case-insensitive.
+_FORBIDDEN_FN_RE = re.compile(
+    r"\b(" + "|".join(re.escape(f) for f in sorted(_FORBIDDEN_FUNCTIONS)) + r")\s*\(",
+    re.IGNORECASE,
+)
 
 
 class SQLGuardrails:
@@ -41,6 +63,9 @@ class SQLGuardrails:
             raise GuardrailViolation(
                 f"Multi-statement SQL detected (possible injection): {sql_stripped[:100]}"
             )
+
+        # Block file/network/extension functions even inside a valid SELECT
+        self._check_forbidden_functions(sql_stripped)
 
         # Try AST-based analysis first
         try:
@@ -92,6 +117,21 @@ class SQLGuardrails:
         # Check for semicolons that separate statements
         parts = [p.strip() for p in cleaned.split(";") if p.strip()]
         return len(parts) > 1
+
+    def _check_forbidden_functions(self, sql: str) -> None:
+        """Block dangerous DuckDB functions (file/network/extension access).
+
+        Runs on the SQL with string literals and comments stripped, so that
+        a value like ``WHERE note = 'read_csv('`` is not a false positive and
+        ``read_csv/**/(...)`` cannot hide the call.
+        """
+        cleaned = self._remove_comments(self._remove_string_literals(sql))
+        match = _FORBIDDEN_FN_RE.search(cleaned)
+        if match:
+            raise GuardrailViolation(
+                f"Blocked forbidden function '{match.group(1).lower()}()'. "
+                f"File, network, and extension access is not allowed: {sql[:100]}"
+            )
 
     def _keyword_check(self, sql: str) -> None:
         """Fallback keyword-based check when AST parsing fails."""

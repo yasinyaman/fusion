@@ -4,8 +4,11 @@ Connects to a running Warp instance (https://github.com/yasinyaman/warp) to
 fetch data from PostgreSQL/MySQL databases via its auto-discovery REST API.
 """
 
+import ipaddress
 import logging
+import socket
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import pandas as pd
 import requests
@@ -18,6 +21,51 @@ logger = logging.getLogger(__name__)
 # Default pagination limit per request
 DEFAULT_PAGE_SIZE = 1000
 DEFAULT_TIMEOUT = 30
+
+# Cloud metadata hostnames that must never be contacted (SSRF targets)
+_BLOCKED_HOSTNAMES = frozenset({"metadata.google.internal", "metadata.goog"})
+
+
+def _is_blocked_ip(host: str) -> bool:
+    """True for link-local / cloud-metadata addresses (e.g. 169.254.169.254).
+
+    Loopback and private ranges are intentionally NOT blocked — Warp normally
+    runs on localhost or a private Docker network.
+    """
+    try:
+        return ipaddress.ip_address(host).is_link_local
+    except ValueError:
+        return False
+
+
+def _validate_base_url(url: str) -> None:
+    """Reject non-http(s) schemes and cloud-metadata/link-local hosts.
+
+    base_url is operator-controlled, so this is defense-in-depth against an
+    accidental or hostile metadata-endpoint URL rather than user-driven SSRF.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ConnectionError(
+            f"Unsupported Warp URL scheme '{parsed.scheme}'. "
+            f"Only http/https are allowed: {url}"
+        )
+    host = parsed.hostname
+    if not host:
+        raise ConnectionError(f"Invalid Warp URL (no host): {url}")
+    if host.lower() in _BLOCKED_HOSTNAMES or _is_blocked_ip(host):
+        raise ConnectionError(
+            f"Blocked Warp host '{host}' (cloud metadata / link-local address)."
+        )
+    # Best-effort: block hostnames that resolve to a link-local/metadata address.
+    try:
+        resolved = socket.gethostbyname(host)
+    except OSError:
+        resolved = None
+    if resolved and _is_blocked_ip(resolved):
+        raise ConnectionError(
+            f"Blocked Warp host '{host}' (resolves to link-local address {resolved})."
+        )
 
 
 class WarpConnector(BaseConnector):
@@ -35,6 +83,7 @@ class WarpConnector(BaseConnector):
     def __init__(self, name: str, config: dict):
         super().__init__(name, config)
         self._base_url = config.get("base_url", "http://localhost:8080").rstrip("/")
+        _validate_base_url(self._base_url)
         self._api_key = config.get("api_key")
         self._database = config.get("database", name)
         self._timeout = config.get("timeout", DEFAULT_TIMEOUT)
@@ -45,6 +94,10 @@ class WarpConnector(BaseConnector):
     def _get_session(self) -> requests.Session:
         if self._session is None:
             self._session = requests.Session()
+            # Do not follow redirects: a 3xx to an attacker-controlled or
+            # internal address (SSRF) raises TooManyRedirects instead of being
+            # silently fetched.
+            self._session.max_redirects = 0
             if self._api_key:
                 self._session.headers["Authorization"] = f"Bearer {self._api_key}"
             self._session.headers["Accept"] = "application/json"
@@ -145,8 +198,11 @@ class WarpConnector(BaseConnector):
 
         return tables
 
-    def fetch_data(self, table: str) -> pd.DataFrame:
-        """Fetch all rows from a table via Warp REST API with pagination."""
+    def fetch_data(self, table: str, max_rows: Optional[int] = None) -> pd.DataFrame:
+        """Fetch rows from a table via Warp REST API with pagination.
+
+        Stops early once ``max_rows`` rows have been collected (None = no cap).
+        """
         if not self._connected:
             raise ConnectionError("Not connected. Call connect() first.")
 
@@ -155,8 +211,12 @@ class WarpConnector(BaseConnector):
         offset = 0
 
         while True:
+            # Never request more than we still need.
+            page_size = self._page_size
+            if max_rows is not None:
+                page_size = min(page_size, max_rows - len(all_rows))
             url = f"{self._base_url}/api/v1/{self._database}/{table}"
-            params = {"limit": self._page_size, "offset": offset}
+            params = {"limit": page_size, "offset": offset}
 
             try:
                 resp = session.get(url, params=params, timeout=self._timeout)
@@ -173,6 +233,14 @@ class WarpConnector(BaseConnector):
                 break
 
             all_rows.extend(rows)
+
+            # Stop if we have reached the ingest cap (and log the truncation).
+            if max_rows is not None and len(all_rows) >= max_rows:
+                all_rows = all_rows[:max_rows]
+                logger.warning(
+                    "Table %s truncated to max_rows=%d during ingest", table, max_rows
+                )
+                break
 
             # If we got fewer rows than page size, we're done
             if len(rows) < self._page_size:
@@ -360,7 +428,9 @@ class WarpConnector(BaseConnector):
             Empty list if /info response has no "databases" key.
         """
         base_url = base_url.rstrip("/")
+        _validate_base_url(base_url)
         session = requests.Session()
+        session.max_redirects = 0  # don't follow redirects (SSRF guard)
         if api_key:
             session.headers["Authorization"] = f"Bearer {api_key}"
         session.headers["Accept"] = "application/json"
