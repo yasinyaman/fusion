@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from fusion.domain.policy import MaterializationPolicy
+
 # API keys that must never be accepted in production (placeholders/examples).
 PLACEHOLDER_API_KEYS = frozenset(
     {
@@ -56,6 +58,16 @@ class Settings:
     max_temp_directory_size: str = ""
     # Max rows pulled from a source when materializing a table (0 = unlimited).
     max_ingest_rows: int = 0
+
+    # How much data a query may pull in. A table bigger than
+    # ``full_load_max_rows`` is only read through a slice (the query's own
+    # WHERE and column list); if that is still too big the query is refused
+    # with concrete advice instead of filling memory.
+    full_load_max_rows: int = 500_000
+    slice_max_rows: int = 500_000
+    slice_budget_rows: int = 2_000_000
+    semi_join_max_keys: int = 50_000
+    in_chunk_size: int = 1_000
 
     # Cache
     cache_ttl: int = 300
@@ -110,6 +122,11 @@ class Settings:
             external_access=_bool(get("FUSION_DUCKDB_EXTERNAL_ACCESS", "false")),
             max_temp_directory_size=get("FUSION_MAX_TEMP_DIRECTORY_SIZE", ""),
             max_ingest_rows=int(get("FUSION_MAX_INGEST_ROWS", "0")),
+            full_load_max_rows=int(get("FUSION_FULL_LOAD_MAX_ROWS", "500000")),
+            slice_max_rows=int(get("FUSION_SLICE_MAX_ROWS", "500000")),
+            slice_budget_rows=int(get("FUSION_SLICE_BUDGET_ROWS", "2000000")),
+            semi_join_max_keys=int(get("FUSION_SEMI_JOIN_MAX_KEYS", "50000")),
+            in_chunk_size=int(get("FUSION_IN_CHUNK_SIZE", "1000")),
             cache_ttl=int(get("FUSION_CACHE_TTL", "300")),
             cache_max_entries=int(get("FUSION_CACHE_MAX_ENTRIES", "500")),
             api_key=get("FUSION_API_KEY", ""),
@@ -145,6 +162,16 @@ class Settings:
         if self.debug_endpoints:
             return self.debug_endpoints.lower() == "true"
         return not self.is_production()
+
+    def policy(self) -> MaterializationPolicy:
+        """The row budgets the planner works to."""
+        return MaterializationPolicy(
+            full_load_max_rows=self.full_load_max_rows,
+            slice_max_rows=self.slice_max_rows,
+            slice_budget_rows=self.slice_budget_rows,
+            semi_join_max_keys=self.semi_join_max_keys,
+            in_chunk_size=self.in_chunk_size,
+        )
 
     def warp_http_defaults(self) -> dict[str, Any]:
         """Auth/resilience/timeout defaults merged under every Warp source config."""

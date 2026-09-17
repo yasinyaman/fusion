@@ -102,3 +102,31 @@ def test_warp_http_defaults():
     assert Settings.from_env({"FUSION_WARP_API_KEY_HEADER": "  "}).warp_api_key_header == (
         "X-API-Key"
     )
+
+
+class TestMaterializationPolicy:
+    def test_defaults(self):
+        policy = Settings().policy()
+        assert policy.full_load_max_rows == 500_000
+        assert policy.slice_max_rows == 500_000
+        assert policy.slice_budget_rows == 2_000_000
+        assert policy.semi_join_max_keys == 50_000
+        assert policy.in_chunk_size == 1_000
+
+    def test_read_from_the_environment(self):
+        s = Settings.from_env(
+            {
+                "FUSION_FULL_LOAD_MAX_ROWS": "10",
+                "FUSION_SLICE_MAX_ROWS": "20",
+                "FUSION_SLICE_BUDGET_ROWS": "30",
+                "FUSION_SEMI_JOIN_MAX_KEYS": "40",
+                "FUSION_IN_CHUNK_SIZE": "50",
+            }
+        )
+        assert s.policy().as_dict() == {
+            "full_load_max_rows": 10,
+            "slice_max_rows": 20,
+            "slice_budget_rows": 30,
+            "semi_join_max_keys": 40,
+            "in_chunk_size": 50,
+        }

@@ -461,11 +461,16 @@ class FakeWarpTransport:
         offset = int(params.get("offset", 0))
         limit = int(params.get("limit", 1000))
         page = rows[offset : offset + limit]
+        total = len(rows)
+        if not any(_FILTER_RE.match(str(key)) for key in params):
+            # An unfiltered count reports the whole table, which is what a
+            # pretended row_estimates entry stands for.
+            total = max(total, self.row_estimates.get(table, 0))
         if self.page_format == "data":
-            return {"data": page, "total": len(rows)}
+            return {"data": page, "total": total}
         if self.page_format == "list" or (self.page_format == "auto" and self.mode == "legacy"):
             return page
-        return {"items": page, "total": len(rows), "limit": limit, "offset": offset}
+        return {"items": page, "total": total, "limit": limit, "offset": offset}
 
     def _export_table(self, url: str) -> str:
         if not url.endswith("/export"):

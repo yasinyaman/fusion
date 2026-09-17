@@ -71,13 +71,16 @@ def build_app(
         source_factory = default_registry(settings.warp_http_defaults()).create
 
     catalog = SchemaCatalog()
-    planner = FetchPlanner(catalog, analyzer)
+    policy = settings.policy()
+    planner = FetchPlanner(catalog, analyzer, policy, clock)
     sources = SourceService(
         catalog,
         store,
         source_factory,
         max_ingest_rows=settings.max_ingest_rows,
         scheduler=scheduler,
+        policy=policy,
+        clock=clock,
     )
     query = QueryService(validator, analyzer, planner, cache, store, sources)
     views = MaterializedViewService(store, validator, planner, sources, scheduler, clock)

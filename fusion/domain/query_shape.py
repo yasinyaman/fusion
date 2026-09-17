@@ -87,6 +87,21 @@ class QueryShape:
     limit: int | None = None
     #: False for CTEs, set operations, subqueries and window functions.
     is_simple_select: bool = True
+    #: True when the statement sorts or groups: a LIMIT then depends on rows
+    #: the source would have to send anyway, so it must not be pushed down.
+    is_ordered: bool = False
+    is_aggregated: bool = False
+
+    @property
+    def limit_is_pushable(self) -> bool:
+        """Whether ``limit`` may be applied while reading a single source table."""
+        return (
+            self.limit is not None
+            and self.single_table
+            and self.is_simple_select
+            and not self.is_ordered
+            and not self.is_aggregated
+        )
 
     def use_for(self, ref: TableRef) -> TableUse | None:
         for use in self.tables:
@@ -112,6 +127,8 @@ class QueryShape:
         return {
             "is_simple_select": self.is_simple_select,
             "limit": self.limit,
+            "is_ordered": self.is_ordered,
+            "is_aggregated": self.is_aggregated,
             "tables": [t.as_dict() for t in self.tables],
             "joins": [
                 {

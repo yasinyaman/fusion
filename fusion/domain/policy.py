@@ -13,7 +13,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from fusion.domain.models import TableRef
+from fusion.domain.models import FetchPlan, TableRef
+from fusion.domain.query_shape import QueryShape
 from fusion.domain.slices import LoadedSlice, SliceSpec
 
 Action = Literal["reuse", "load_full", "load_slice", "semi_join", "refuse"]
@@ -101,6 +102,42 @@ class TargetPlan:
             "slice_estimate": self.slice_estimate,
             "reason": self.reason,
             "semi_join": self.semi_join.describe() if self.semi_join else None,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class QueryPlan:
+    """Everything the query pipeline needs before it can execute a statement.
+
+    ``targets`` says what to do about each table, ``evictions`` names slices
+    that have to go first to stay inside the budget, and a non-empty
+    ``refusal`` means the query must not run at all.
+    """
+
+    fetch: FetchPlan
+    shape: QueryShape
+    targets: tuple[TargetPlan, ...] = ()
+    evictions: tuple[str, ...] = ()
+    refusal: str = ""
+
+    @property
+    def is_refused(self) -> bool:
+        return bool(self.refusal)
+
+    @property
+    def fetches(self) -> tuple[TargetPlan, ...]:
+        return tuple(t for t in self.targets if t.needs_fetch)
+
+    def table_mapping(self) -> dict[TableRef, str]:
+        """Tables whose name in the store differs from the reference in the SQL."""
+        return {t.ref: t.table_name for t in self.targets if t.table_name != t.ref.full_name}
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "targets": [t.as_dict() for t in self.targets],
+            "evictions": list(self.evictions),
+            "refusal": self.refusal,
+            "shape": self.shape.as_dict(),
         }
 
 

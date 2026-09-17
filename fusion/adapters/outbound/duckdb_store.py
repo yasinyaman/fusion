@@ -236,13 +236,10 @@ class DuckDBStore:
                 if not append:
                     self._conn.execute(f"CREATE OR REPLACE TABLE {target} AS SELECT * FROM {tmp}")
                     return
-                try:
-                    self._conn.execute(f"INSERT INTO {target} SELECT * FROM {tmp}")
-                except duckdb.Error:
-                    # The batch does not line up with the table (a column that
-                    # looked numeric until this batch, a narrower type): insert
-                    # it column by column with explicit casts.
-                    self._conn.execute(self._casting_insert(target, tmp))
+                # Insert by column name, not by position: batches may arrive
+                # in a different order, carry an extra column, or hold a value
+                # that only looked numeric until now.
+                self._conn.execute(self._casting_insert(target, tmp))
             except duckdb.Error as e:
                 raise QueryError(f"Failed to write a batch into {target}: {e}") from e
             finally:

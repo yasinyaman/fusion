@@ -6,6 +6,8 @@
 - ``e2e_app``       real WarpSource over a FakeWarpTransport (mock Warp API)
 """
 
+from dataclasses import replace
+
 import pytest
 
 from fusion.adapters.outbound.warp.source import WarpSource
@@ -84,6 +86,31 @@ def denying_app(settings, scheduler, denying_transport):
     a = _e2e_app(settings, scheduler, denying_transport)
     yield a
     a.close()
+
+
+@pytest.fixture
+def big_transport():
+    """A production-shaped Warp: raw SQL off, ``orders`` far too big to load.
+
+    With ``enable_raw_query`` off (Warp's default, and refused outright in
+    production) Fusion cannot push a query down, so slices are the only way in.
+    """
+    return FakeWarpTransport(
+        MOCK_DB,
+        database="ecommerce",
+        raw_query=False,
+        row_estimates={"orders": 9_000_000},
+    )
+
+
+@pytest.fixture
+def big_app(settings, scheduler, big_transport):
+    """Slices are the only way to read ``ecommerce.orders`` here."""
+    app = _e2e_app(
+        replace(settings, full_load_max_rows=100, slice_max_rows=1000), scheduler, big_transport
+    )
+    yield app
+    app.close()
 
 
 @pytest.fixture

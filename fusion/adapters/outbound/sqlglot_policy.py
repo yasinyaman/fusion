@@ -211,6 +211,8 @@ class SqlglotAnalyzer:
             joins=tuple(joins),
             limit=_limit_of(parsed),
             is_simple_select=True,
+            is_ordered=parsed.args.get("order") is not None,
+            is_aggregated=_is_aggregated(parsed),
         )
 
     # -- rewriting ----------------------------------------------------------
@@ -227,8 +229,9 @@ class SqlglotAnalyzer:
             return sql
         changed = False
         for table in parsed.find_all(exp.Table):
-            target = mapping.get(TableRef(table.db or "", table.name))
-            if target is None or target == table.name:
+            ref = TableRef(table.db or "", table.name)
+            target = mapping.get(ref)
+            if target is None or target in (ref.full_name, table.name):
                 continue
             if not table.args.get("alias"):
                 # Keep the original name usable as a qualifier: the query may
@@ -485,6 +488,13 @@ def _literal(node: exp.Expr) -> Any:
         return float(text)
     except ValueError:
         return _NOT_LITERAL
+
+
+def _is_aggregated(select: exp.Select) -> bool:
+    """GROUP BY, HAVING, DISTINCT or a bare aggregate in the projection."""
+    if select.args.get("group") or select.args.get("having") or select.args.get("distinct"):
+        return True
+    return any(isinstance(node, exp.AggFunc) for node in select.find_all(exp.AggFunc))
 
 
 def _limit_of(select: exp.Select) -> int | None:

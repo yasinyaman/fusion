@@ -227,7 +227,7 @@ class TestLoadTable:
             "status": "already_loaded",
             "table": "warp_main.users",
         }
-        assert len(factory.sources["warp_main"].calls_named("fetch_table")) == 1
+        assert len(factory.sources["warp_main"].calls_named("fetch_slice")) == 1
 
     def test_load_table_errors(self, app_lazy):
         assert "source.table" in app_lazy.tools.load_table("users")["error"]
