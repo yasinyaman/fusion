@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 
 from fusion.domain.errors import ConnectionError, QueryError
-from fusion.domain.models import RefreshSpec, RowSet, TableRef
+from fusion.domain.models import ColumnInfo, RefreshSpec, RowSet, TableRef, TableSchema
 from fusion.domain.policy import TargetPlan
 from fusion.domain.slices import Predicate, SliceSpec
 from tests.data import ORDERS, TEST_DB, USERS
@@ -437,3 +437,31 @@ class TestIncrementalRefresh:
         )
         assert app.sources.refresh_spec("cfg.orders") == RefreshSpec("updated_at", ("id",))
         assert app.sources.refresh_spec("cfg.nope") is None
+
+
+class TestStreamTypesWin:
+    """A source that announces its column types beats the catalog's guess."""
+
+    def test_the_streams_own_schema_is_used(self, app, factory):
+        app.sources.connect("db", {"type": "fake", "tables": {"t": [{"n": "1"}]}})
+        # The catalog inferred varchar from a sample; the stream says integer.
+        assert app.catalog.get_table("db.t").columns[0].type == "varchar"
+
+        class Typed:
+            row_limit = None
+            columns = ("n",)
+            schema = TableSchema([ColumnInfo("n", "integer", False)])
+
+            def arrow_reader(self):
+                return None
+
+            def __iter__(self):
+                yield RowSet.from_records([{"n": 1}, {"n": 2}])
+
+            def close(self):
+                return None
+
+        factory.sources["db"].fetch_slice = lambda *a, **k: Typed()
+        app.sources.ensure_loaded(["db.t"])
+        assert [c.type for c in app.store.describe("db.t")] == ["BIGINT"]
+        assert app.store.execute("SELECT SUM(n) FROM db.t").rows == [(3,)]

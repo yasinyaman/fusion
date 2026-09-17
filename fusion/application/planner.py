@@ -235,6 +235,7 @@ class FetchPlanner:
                     driver_table=driver.table_name,
                     driver_key=other[1],
                     target_key=target_column,
+                    driver_predicates=driver_use.predicates,
                 ),
                 driver_rows,
             )

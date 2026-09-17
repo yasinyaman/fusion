@@ -152,3 +152,121 @@ class TestSemiJoinThroughTheQueryPipeline:
     def test_without_a_join_the_same_table_is_refused(self, app):
         with pytest.raises(QueryError, match="Refusing to load db.events"):
             app.query.sql("SELECT * FROM db.events")
+
+
+class TestSelectivity:
+    """Only keys that survive the driver's own filter are passed."""
+
+    def test_the_drivers_where_clause_narrows_the_keys(self, app, factory):
+        app.query.sql(
+            "SELECT COUNT(*) AS n FROM db.users u JOIN db.events e ON u.id = e.user_id "
+            "WHERE u.segment = 'premium'"
+        )
+        events = [c for c in factory.sources["db"].calls_named("fetch_slice") if c[1] == "events"]
+        keys = events[-1][2].predicates[-1].value
+        assert set(keys) == {1, 2}  # ids 1 and 2 are the premium users
+        loaded = app.catalog.slices_of(BIG)[0]
+        assert loaded.row_count == 10  # not the 20 rows of the whole table
+
+    def test_the_keys_are_part_of_the_slice_identity(self, app, factory):
+        app.query.sql(
+            "SELECT COUNT(*) AS n FROM db.users u JOIN db.events e ON u.id = e.user_id "
+            "WHERE u.segment = 'premium'"
+        )
+        app.query.sql(
+            "SELECT COUNT(*) AS n FROM db.users u JOIN db.events e ON u.id = e.user_id "
+            "WHERE u.segment = 'basic'"
+        )
+        # Different drivers, different key sets, so two distinct slices.
+        assert len(app.catalog.slices_of(BIG)) == 2
+
+    def test_an_unselective_join_is_refused_not_truncated(self, app, factory):
+        from dataclasses import replace
+
+        app.sources._policy = replace(app.sources._policy, slice_max_rows=5)
+        app.sources._semi_join_executor._policy = app.sources._policy
+        with pytest.raises(QueryError) as error:
+            app.sources.ensure_slices([_plan(app)])
+        message = str(error.value)
+        assert "not selective enough" in message
+        assert "slice_max_rows=5" in message
+        assert "FUSION_SLICE_MAX_ROWS" in message
+        # Nothing half-written is left behind.
+        assert app.catalog.slices_of(BIG) == []
+
+    def test_several_driver_conditions_are_an_and(self, app):
+        from fusion.domain.slices import Predicate as P
+
+        app.sources.ensure_slices([TargetPlan(SMALL, SliceSpec.FULL, "load_full")])
+        target = TargetPlan(
+            BIG,
+            SliceSpec.FULL,
+            "semi_join",
+            semi_join=SemiJoinSpec(
+                SMALL,
+                "db.users",
+                "id",
+                "user_id",
+                driver_predicates=(P("segment", "eq", "premium"), P("id", "gt", 1)),
+            ),
+        )
+        app.sources.ensure_slices([target])
+        keys = app.catalog.slices_of(BIG)[0].spec.predicates[-1].value
+        assert set(keys) == {2}
+
+    def test_an_in_condition_on_the_driver(self, app):
+        from fusion.domain.slices import Predicate as P
+
+        app.sources.ensure_slices([TargetPlan(SMALL, SliceSpec.FULL, "load_full")])
+        target = TargetPlan(
+            BIG,
+            SliceSpec.FULL,
+            "semi_join",
+            semi_join=SemiJoinSpec(
+                SMALL, "db.users", "id", "user_id", driver_predicates=(P("id", "in", (1, 3)),)
+            ),
+        )
+        app.sources.ensure_slices([target])
+        assert set(app.catalog.slices_of(BIG)[0].spec.predicates[-1].value) == {1, 3}
+
+
+class TestDriverConditionSql:
+    """The driver filter is rendered with bound parameters, never interpolation."""
+
+    def _where(self, *predicates):
+        from fusion.application.semijoin import _where
+
+        return _where(predicates)
+
+    def test_comparisons_use_placeholders(self):
+        from fusion.domain.slices import Predicate as P
+
+        sql, params = self._where(P("a", "eq", 1), P("b", "gte", 2.5), P("c", "like", "x%"))
+        assert sql == ' AND "a" = ? AND "b" >= ? AND "c" LIKE ?'
+        assert params == [1, 2.5, "x%"]
+
+    def test_null_checks_take_no_parameter(self):
+        from fusion.domain.slices import Predicate as P
+
+        assert self._where(P("a", "is_null", True)) == (' AND "a" IS NULL', [])
+        assert self._where(P("a", "is_null", False)) == (' AND "a" IS NOT NULL', [])
+
+    def test_in_lists_expand_to_placeholders(self):
+        from fusion.domain.slices import Predicate as P
+
+        sql, params = self._where(P("a", "in", (1, 2, 3)))
+        assert sql == ' AND "a" IN (?, ?, ?)' and params == [1, 2, 3]
+
+    def test_an_empty_in_list_matches_nothing(self):
+        from fusion.domain.slices import Predicate as P
+
+        assert self._where(P("a", "in", ())) == (" AND FALSE", [])
+
+    def test_no_conditions_render_nothing(self):
+        assert self._where() == ("", [])
+
+    def test_a_quoted_column_name_is_escaped(self):
+        from fusion.domain.slices import Predicate as P
+
+        sql, _ = self._where(P('we"ird', "eq", 1))
+        assert sql == ' AND "we""ird" = ?'

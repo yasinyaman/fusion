@@ -31,6 +31,20 @@ logger = logging.getLogger(__name__)
 
 STAGING_SUFFIX = "__tmp"
 
+_SQL_OPS = {
+    "eq": "=",
+    "ne": "!=",
+    "gt": ">",
+    "gte": ">=",
+    "lt": "<",
+    "lte": "<=",
+    "like": "LIKE",
+}
+
+
+def _quote(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
 
 class SemiJoinExecutor:
     """Loads a slice of a table defined by the keys held in another table."""
@@ -90,15 +104,20 @@ class SemiJoinExecutor:
         return loaded
 
     def _driver_keys(self, semi: SemiJoinSpec) -> tuple[Any, ...]:
-        """Distinct non-null key values held by the driver table."""
+        """Distinct non-null key values the driver contributes to this join.
+
+        The query's own conditions on the driver are applied here: a key that
+        the WHERE clause excludes cannot produce a joined row, so passing it
+        would only drag rows over for nothing.
+        """
         if not IDENTIFIER_RE.match(semi.driver_key):
             raise QueryError(f"Invalid join key '{semi.driver_key}'")
-        column = '"' + semi.driver_key.replace('"', '""') + '"'
-        table = ".".join(
-            '"' + part.replace('"', '""') + '"' for part in semi.driver_table.split(".", 1)
-        )
+        column = _quote(semi.driver_key)
+        table = ".".join(_quote(part) for part in semi.driver_table.split(".", 1))
+        conditions, params = _where(semi.driver_predicates)
         rows = self._store.execute(
-            f"SELECT DISTINCT {column} FROM {table} WHERE {column} IS NOT NULL"
+            f"SELECT DISTINCT {column} FROM {table} WHERE {column} IS NOT NULL{conditions}",
+            params or None,
         )
         keys = tuple(row[0] for row in rows.rows)
         if not self._policy.allows_semi_join(len(keys)):
@@ -138,15 +157,32 @@ class SemiJoinExecutor:
                 stream = source.fetch_slice(ref.table, chunk_spec, max_rows=remaining)
                 if index == 0:
                     total += self._store.materialize_stream(
-                        staging, stream, self._slice_schema(ref, spec)
+                        staging, stream, stream.schema or self._slice_schema(ref, spec)
                     )
                 else:
                     total += self._store.append_stream(staging, stream)
+                self._check_budget(ref, total, len(keys))
         except Exception:
             self._store.drop_table(staging)
             raise
         self._store.rename_table(staging, table_name)
         return total
+
+    def _check_budget(self, ref: TableRef, fetched: int, keys: int) -> None:
+        """Stop a join that is not selective enough to be worth key passing.
+
+        Truncating would silently drop rows from the answer, so this refuses
+        instead: the caller is told how far it got and what to change.
+        """
+        limit = self._policy.slice_max_rows
+        if limit <= 0 or fetched <= limit:
+            return
+        raise QueryError(
+            f"Refusing to keep fetching {ref.full_name}: {keys:,} join key(s) have "
+            f"already matched {fetched:,} rows, past slice_max_rows={limit:,}. The "
+            "join is not selective enough to be cheaper than the table itself. Add "
+            f"a WHERE condition on {ref.table}, or raise FUSION_SLICE_MAX_ROWS."
+        )
 
     def _slice_schema(self, ref: TableRef, spec: SliceSpec) -> TableSchema | None:
         """Declared types for the slice, so an empty result still has columns."""
@@ -158,6 +194,26 @@ class SemiJoinExecutor:
         by_name = {c.name: c for c in schema.columns}
         columns = [by_name[name] for name in sorted(spec.columns) if name in by_name]
         return TableSchema(columns=columns) if columns else None
+
+
+def _where(predicates: Sequence[Predicate]) -> tuple[str, list[Any]]:
+    """Render driver conditions as a parameterized SQL fragment (leading AND)."""
+    parts: list[str] = []
+    params: list[Any] = []
+    for predicate in predicates:
+        column = _quote(predicate.column)
+        if predicate.op == "is_null":
+            parts.append(f"{column} IS {'' if predicate.value else 'NOT '}NULL")
+        elif predicate.op == "in":
+            values = list(predicate.value)
+            if not values:
+                return " AND FALSE", []
+            parts.append(f"{column} IN ({', '.join('?' * len(values))})")
+            params.extend(values)
+        else:
+            parts.append(f"{column} {_SQL_OPS[predicate.op]} ?")
+            params.append(predicate.value)
+    return ("".join(f" AND {part}" for part in parts), params)
 
 
 def _with_keys(spec: SliceSpec, chunk: Sequence[Any]) -> tuple[Predicate, ...]:

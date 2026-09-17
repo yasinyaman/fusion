@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 from fusion.domain.models import FetchPlan, TableRef
 from fusion.domain.query_shape import QueryShape
-from fusion.domain.slices import LoadedSlice, SliceSpec
+from fusion.domain.slices import LoadedSlice, Predicate, SliceSpec
 
 Action = Literal["reuse", "load_full", "load_slice", "semi_join", "refuse"]
 
@@ -57,15 +57,26 @@ class MaterializationPolicy:
 
 @dataclass(frozen=True, slots=True)
 class SemiJoinSpec:
-    """Fetch only the rows of the target whose key appears in ``driver``."""
+    """Fetch only the rows of the target whose key appears in ``driver``.
+
+    ``driver_predicates`` are the query's own conditions on the driver: only
+    the keys that survive them can contribute a row to the join, so applying
+    them is what makes key passing selective.
+    """
 
     driver: TableRef
     driver_table: str
     driver_key: str
     target_key: str
+    driver_predicates: tuple[Predicate, ...] = ()
 
     def describe(self) -> str:
-        return f"{self.driver.full_name}.{self.driver_key} -> {self.target_key}"
+        where = (
+            f" where {' AND '.join(str(p) for p in self.driver_predicates)}"
+            if (self.driver_predicates)
+            else ""
+        )
+        return f"{self.driver.full_name}.{self.driver_key}{where} -> {self.target_key}"
 
 
 @dataclass(frozen=True, slots=True)

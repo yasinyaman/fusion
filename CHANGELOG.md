@@ -22,7 +22,10 @@ when even that is too much.
   evicted least-recently-used first.
 - **Semi-joins.** A huge table joined to a small one is fetched by the keys
   the small one holds, in `FUSION_IN_CHUNK_SIZE` chunks, up to
-  `FUSION_SEMI_JOIN_MAX_KEYS` distinct values.
+  `FUSION_SEMI_JOIN_MAX_KEYS` distinct values. The query's own conditions on
+  the small table narrow the key set, and a join that turns out not to be
+  selective is refused once it passes `FUSION_SLICE_MAX_ROWS` rather than
+  silently returning part of the answer.
 - **Arrow streaming ingest.** Warp 0.10's `/{table}/export` is read as an
   Arrow IPC stream and handed to DuckDB batch by batch (NDJSON and paged
   JSON are the fallbacks), so memory no longer scales with table size.

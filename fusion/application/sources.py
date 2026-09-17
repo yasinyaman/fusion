@@ -205,7 +205,9 @@ class SourceService:
         max_rows = self._max_ingest_rows or None
         stream = source.fetch_slice(ref.table, spec, max_rows=max_rows)
         try:
-            count = self._store.materialize_stream(staging, stream, self._slice_schema(ref, spec))
+            count = self._store.materialize_stream(
+                staging, stream, stream.schema or self._slice_schema(ref, spec)
+            )
         except Exception:
             self._store.drop_table(staging)
             raise
@@ -243,10 +245,12 @@ class SourceService:
         return loaded
 
     def _slice_schema(self, ref: TableRef, spec: SliceSpec) -> TableSchema | None:
-        """Declared column types for a slice, in the order the source sends them.
+        """Column types for a slice, in the order the source sends them.
 
-        Without this an empty slice would land as a table with no columns,
-        and the rewritten query would fail on a column that simply has no rows.
+        Used when the stream does not announce its own types (an Arrow stream
+        does, and those win). Without it an empty slice would land as a table
+        with no columns, and the rewritten query would fail on a column that
+        simply has no rows.
         """
         if not self._catalog.has_table(ref):
             return None
