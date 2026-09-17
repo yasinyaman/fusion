@@ -220,9 +220,7 @@ class TestWarpConnector:
 
     def test_extract_tables_dict_with_objects(self, warp_config):
         conn = WarpConnector("test", warp_config)
-        tables = conn._extract_tables({
-            "tables": [{"name": "t1"}, {"name": "t2"}]
-        })
+        tables = conn._extract_tables({"tables": [{"name": "t1"}, {"name": "t2"}]})
         assert tables == ["t1", "t2"]
 
     def test_extract_tables_list(self, warp_config):
@@ -429,11 +427,14 @@ class TestWarpSSRFGuard:
 
     def test_connector_init_rejects_metadata(self):
         with pytest.raises(ConnectionError):
-            WarpConnector("evil", {
-                "type": "warp",
-                "base_url": "http://169.254.169.254",
-                "database": "x",
-            })
+            WarpConnector(
+                "evil",
+                {
+                    "type": "warp",
+                    "base_url": "http://169.254.169.254",
+                    "database": "x",
+                },
+            )
 
     def test_discover_databases_rejects_metadata(self):
         with pytest.raises(ConnectionError):

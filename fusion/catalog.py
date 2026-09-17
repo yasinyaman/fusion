@@ -1,7 +1,5 @@
 """Schema catalog for multi-source metadata management."""
 
-from typing import Optional
-
 from fusion.exceptions import SchemaError
 
 
@@ -50,9 +48,7 @@ class SchemaCatalog:
         """Remove a source from the catalog."""
         if name in self._sources:
             del self._sources[name]
-        self._loaded_tables = {
-            t for t in self._loaded_tables if not t.startswith(f"{name}.")
-        }
+        self._loaded_tables = {t for t in self._loaded_tables if not t.startswith(f"{name}.")}
 
     def get_schema(self, source_name: str) -> dict:
         """Get schema info for a specific source."""
@@ -68,9 +64,7 @@ class SchemaCatalog:
         """Get detailed info for a specific table (e.g. 'pg_main.orders')."""
         parts = full_table_name.split(".", 1)
         if len(parts) != 2:
-            raise SchemaError(
-                f"Invalid table name '{full_table_name}'. Use 'source.table' format."
-            )
+            raise SchemaError(f"Invalid table name '{full_table_name}'. Use 'source.table' format.")
 
         source_name, table_name = parts
         if source_name not in self._sources:
@@ -90,7 +84,7 @@ class SchemaCatalog:
                 result.append(f"{source_name}.{table_name}")
         return result
 
-    def generate_context(self, schemas: Optional[list[str]] = None) -> str:
+    def generate_context(self, schemas: list[str] | None = None) -> str:
         """Generate LLM-friendly schema context in Markdown format.
 
         Args:

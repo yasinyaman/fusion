@@ -2,7 +2,6 @@
 
 import json
 import time
-from typing import Optional
 
 import pandas as pd
 from tabulate import tabulate
@@ -53,7 +52,7 @@ class QueryResult:
 
     def to_dict(self) -> list[dict]:
         """Convert to list of dictionaries."""
-        return [dict(zip(self._columns, row)) for row in self._data]
+        return [dict(zip(self._columns, row, strict=True)) for row in self._data]
 
     def to_markdown(self) -> str:
         """Convert to Markdown table using tabulate."""
@@ -64,7 +63,7 @@ class QueryResult:
         records = self.to_dict()
         return json.dumps(records, indent=indent, default=str, ensure_ascii=False)
 
-    def to_csv(self, path: Optional[str] = None) -> Optional[str]:
+    def to_csv(self, path: str | None = None) -> str | None:
         """Convert to CSV. If path given, write to file; otherwise return string."""
         df = self.to_dataframe()
         if path:

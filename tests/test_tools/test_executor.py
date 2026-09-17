@@ -24,10 +24,7 @@ class TestToolExecutorListSources:
 
     def test_list_sources_shows_row_counts(self, executor):
         result = executor.list_sources()
-        users = next(
-            t for t in result["sources"][0]["tables"]
-            if t["name"] == "test_db.users"
-        )
+        users = next(t for t in result["sources"][0]["tables"] if t["name"] == "test_db.users")
         assert users["row_count"] == 5
 
 
@@ -136,16 +133,24 @@ class TestToolExecutorAggregateData:
     def test_aggregate_invalid_func(self, executor):
         result = executor.execute(
             "aggregate_data",
-            {"table": "test_db.orders", "group_by": "product",
-             "agg_column": "amount", "agg_func": "EVIL"},
+            {
+                "table": "test_db.orders",
+                "group_by": "product",
+                "agg_column": "amount",
+                "agg_func": "EVIL",
+            },
         )
         assert "error" in result
 
     def test_aggregate_unknown_column_rejected(self, executor):
         result = executor.execute(
             "aggregate_data",
-            {"table": "test_db.orders", "group_by": "product",
-             "agg_column": "nonexistent", "agg_func": "SUM"},
+            {
+                "table": "test_db.orders",
+                "group_by": "product",
+                "agg_column": "nonexistent",
+                "agg_func": "SUM",
+            },
         )
         assert "error" in result
         assert "Unknown column" in result["error"]
@@ -234,9 +239,7 @@ class TestToolExecutorMVOperations:
 
     def test_query_data_mv(self, executor):
         self._create_mv(executor)
-        result = executor.query_data(
-            "SELECT * FROM mv_test_orders ORDER BY total DESC"
-        )
+        result = executor.query_data("SELECT * FROM mv_test_orders ORDER BY total DESC")
         assert result["row_count"] > 0
         assert result["rows"][0]["product"] == "A"
 

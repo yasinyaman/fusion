@@ -23,9 +23,16 @@ class TestToolDefinitions:
     def test_tool_names(self):
         names = [t["name"] for t in TOOL_DEFINITIONS]
         expected = [
-            "list_sources", "describe_table", "query_data", "search_data",
-            "aggregate_data", "create_view", "list_views", "refresh_view",
-            "load_table", "cache_stats",
+            "list_sources",
+            "describe_table",
+            "query_data",
+            "search_data",
+            "aggregate_data",
+            "create_view",
+            "list_views",
+            "refresh_view",
+            "load_table",
+            "cache_stats",
         ]
         assert names == expected
 

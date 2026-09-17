@@ -9,7 +9,9 @@ from fusion.views.materialized import MaterializedViewManager
 class TestMaterializedViewManager:
     def test_create_view(self, engine_with_data):
         mv = MaterializedViewManager(engine_with_data)
-        mv.create("test_view", "SELECT segment, COUNT(*) as cnt FROM test_db.users GROUP BY segment")
+        mv.create(
+            "test_view", "SELECT segment, COUNT(*) as cnt FROM test_db.users GROUP BY segment"
+        )
         views = mv.list_views()
         assert len(views) == 1
         assert views[0]["name"] == "test_view"
@@ -17,7 +19,9 @@ class TestMaterializedViewManager:
 
     def test_get_view(self, engine_with_data):
         mv = MaterializedViewManager(engine_with_data)
-        mv.create("test_view", "SELECT segment, COUNT(*) as cnt FROM test_db.users GROUP BY segment")
+        mv.create(
+            "test_view", "SELECT segment, COUNT(*) as cnt FROM test_db.users GROUP BY segment"
+        )
         result = mv.get("test_view")
         assert result.row_count > 0
         mv.close()

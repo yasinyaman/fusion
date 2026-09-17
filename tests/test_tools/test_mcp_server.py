@@ -13,6 +13,7 @@ class TestMCPServer:
         """Test that _create_mcp_app can be imported (mcp package optional)."""
         try:
             from fusion.tools.mcp_server import _create_mcp_app
+
             assert callable(_create_mcp_app)
         except ImportError:
             pytest.skip("mcp package not installed")

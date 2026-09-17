@@ -10,51 +10,59 @@ from fusion.strategy import FetchPlan, FetchStrategy, TableTarget
 def catalog():
     """Catalog with two sources for federation testing."""
     cat = SchemaCatalog()
-    cat.register_source("warp_ecommerce", "warp", {
-        "orders": {
-            "columns": [
-                {"name": "id", "type": "integer", "nullable": False},
-                {"name": "user_id", "type": "integer", "nullable": False},
-                {"name": "amount", "type": "double", "nullable": False},
-                {"name": "status", "type": "varchar", "nullable": True},
-            ],
-            "row_count": 10000,
+    cat.register_source(
+        "warp_ecommerce",
+        "warp",
+        {
+            "orders": {
+                "columns": [
+                    {"name": "id", "type": "integer", "nullable": False},
+                    {"name": "user_id", "type": "integer", "nullable": False},
+                    {"name": "amount", "type": "double", "nullable": False},
+                    {"name": "status", "type": "varchar", "nullable": True},
+                ],
+                "row_count": 10000,
+            },
+            "customers": {
+                "columns": [
+                    {"name": "id", "type": "integer", "nullable": False},
+                    {"name": "name", "type": "varchar", "nullable": False},
+                    {"name": "email", "type": "varchar", "nullable": True},
+                ],
+                "row_count": 5000,
+            },
+            "products": {
+                "columns": [
+                    {"name": "id", "type": "integer", "nullable": False},
+                    {"name": "name", "type": "varchar", "nullable": False},
+                    {"name": "price", "type": "double", "nullable": False},
+                ],
+                "row_count": 200,
+            },
         },
-        "customers": {
-            "columns": [
-                {"name": "id", "type": "integer", "nullable": False},
-                {"name": "name", "type": "varchar", "nullable": False},
-                {"name": "email", "type": "varchar", "nullable": True},
-            ],
-            "row_count": 5000,
+    )
+    cat.register_source(
+        "warp_analytics",
+        "warp",
+        {
+            "events": {
+                "columns": [
+                    {"name": "id", "type": "integer", "nullable": False},
+                    {"name": "order_id", "type": "integer", "nullable": False},
+                    {"name": "event_type", "type": "varchar", "nullable": False},
+                ],
+                "row_count": 50000,
+            },
+            "sessions": {
+                "columns": [
+                    {"name": "id", "type": "integer", "nullable": False},
+                    {"name": "user_id", "type": "integer", "nullable": False},
+                    {"name": "duration", "type": "integer", "nullable": True},
+                ],
+                "row_count": 30000,
+            },
         },
-        "products": {
-            "columns": [
-                {"name": "id", "type": "integer", "nullable": False},
-                {"name": "name", "type": "varchar", "nullable": False},
-                {"name": "price", "type": "double", "nullable": False},
-            ],
-            "row_count": 200,
-        },
-    })
-    cat.register_source("warp_analytics", "warp", {
-        "events": {
-            "columns": [
-                {"name": "id", "type": "integer", "nullable": False},
-                {"name": "order_id", "type": "integer", "nullable": False},
-                {"name": "event_type", "type": "varchar", "nullable": False},
-            ],
-            "row_count": 50000,
-        },
-        "sessions": {
-            "columns": [
-                {"name": "id", "type": "integer", "nullable": False},
-                {"name": "user_id", "type": "integer", "nullable": False},
-                {"name": "duration", "type": "integer", "nullable": True},
-            ],
-            "row_count": 30000,
-        },
-    })
+    )
     return cat
 
 
@@ -64,6 +72,7 @@ def strategy(catalog):
 
 
 # --- TableTarget & FetchPlan ---
+
 
 class TestTableTarget:
     def test_full_name(self):
@@ -96,6 +105,7 @@ class TestFetchPlan:
 
 
 # --- plan_for_sql ---
+
 
 class TestPlanForSql:
     def test_qualified_table(self, strategy):
@@ -155,5 +165,3 @@ class TestPlanForSql:
         assert plan.is_empty() or all(
             t.full_name in strategy._catalog.list_tables() for t in plan.targets
         )
-
-

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from fusion.tools.executor import ToolExecutor
@@ -36,7 +36,7 @@ class OLAPEngine:
         cache_max_entries: int = 500,
         cache_ttl: int = 300,
         enable_external_access: bool = False,
-        max_temp_directory_size: Optional[str] = None,
+        max_temp_directory_size: str | None = None,
         max_ingest_rows: int = 0,
     ):
         self._conn = duckdb.connect(database)
@@ -45,9 +45,7 @@ class OLAPEngine:
 
         # Cap on-disk spill so a runaway query can't fill the disk.
         if max_temp_directory_size:
-            self._conn.execute(
-                f"SET max_temp_directory_size = '{max_temp_directory_size}'"
-            )
+            self._conn.execute(f"SET max_temp_directory_size = '{max_temp_directory_size}'")
         # Max rows to pull from a source when materializing a table (0 = no cap).
         self._max_ingest_rows = max_ingest_rows
 
@@ -67,12 +65,14 @@ class OLAPEngine:
         self.guardrails = SQLGuardrails()
 
         self._connectors: dict[str, Any] = {}
-        self._auto_refresh_timer: Optional[threading.Timer] = None
+        self._auto_refresh_timer: threading.Timer | None = None
         self._auto_refresh_running = False
 
         logger.info(
             "OLAPEngine initialized (db=%s, threads=%d, memory=%s)",
-            database, threads, memory_limit,
+            database,
+            threads,
+            memory_limit,
         )
 
     def connect_source(self, name: str, config: dict, fetch_all: bool = False) -> None:
@@ -114,7 +114,8 @@ class OLAPEngine:
         self._connectors[name] = connector
         logger.info(
             "Connected source: %s (%d tables, metadata only)",
-            name, len(tables_meta),
+            name,
+            len(tables_meta),
         )
 
         # Optionally load all data eagerly
@@ -138,7 +139,8 @@ class OLAPEngine:
             if source_name not in self._connectors:
                 logger.warning(
                     "No connector for source '%s', cannot load %s",
-                    source_name, full_name,
+                    source_name,
+                    full_name,
                 )
                 continue
             self._fetch_table_on_demand(source_name, table_name)
@@ -178,9 +180,7 @@ class OLAPEngine:
         with self._lock:
             self._conn.register(tmp, df)
             try:
-                self._conn.execute(
-                    f"CREATE OR REPLACE TABLE {full_name} AS SELECT * FROM {tmp}"
-                )
+                self._conn.execute(f"CREATE OR REPLACE TABLE {full_name} AS SELECT * FROM {tmp}")
             finally:
                 self._conn.unregister(tmp)
 
@@ -200,9 +200,9 @@ class OLAPEngine:
         self,
         query: str,
         use_cache: bool = True,
-        cache_ttl: Optional[int] = None,
+        cache_ttl: int | None = None,
         auto_load: bool = True,
-        params: Optional[list] = None,
+        params: list | None = None,
     ) -> QueryResult:
         """Execute a SQL query with guardrails and optional caching.
 
@@ -251,9 +251,7 @@ class OLAPEngine:
                             self.cache.put(query, result, ttl=cache_ttl)
                         return result
                     except Exception as e:
-                        logger.info(
-                            "Pushdown failed, falling back to DuckDB: %s", e
-                        )
+                        logger.info("Pushdown failed, falling back to DuckDB: %s", e)
 
             # Fallback: load tables into DuckDB
             if not plan.is_empty():
@@ -288,9 +286,7 @@ class OLAPEngine:
         logger.debug("Query executed in %.1fms (%d rows)", elapsed_ms, len(data))
         return query_result
 
-    def _execute_pushdown(
-        self, query: str, plan: Any, connector: Any
-    ) -> QueryResult:
+    def _execute_pushdown(self, query: str, plan: Any, connector: Any) -> QueryResult:
         """Execute a query via pushdown to the source connector.
 
         Rewrites the SQL to remove source prefixes, sends it to the
@@ -406,7 +402,7 @@ class OLAPEngine:
         """Return cache statistics."""
         return self.cache.stats()
 
-    def schema_context(self, schemas: Optional[list[str]] = None) -> str:
+    def schema_context(self, schemas: list[str] | None = None) -> str:
         """Generate LLM-friendly schema context string."""
         return self.catalog.generate_context(schemas)
 
@@ -419,9 +415,7 @@ class OLAPEngine:
                 continue
             try:
                 with self._lock:
-                    row = self._conn.execute(
-                        f"SELECT COUNT(*) FROM {table}"
-                    ).fetchone()
+                    row = self._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
                 result[table] = row[0] if row else -1
             except Exception:
                 result[table] = -1
@@ -444,19 +438,22 @@ class OLAPEngine:
         self._conn.close()
         logger.info("OLAPEngine closed")
 
-    def get_tool_executor(self) -> "ToolExecutor":
+    def get_tool_executor(self) -> ToolExecutor:
         """Create and return a ToolExecutor for this engine."""
         from fusion.tools.executor import ToolExecutor
+
         return ToolExecutor(self)
 
     def as_openai_tools(self) -> list[dict]:
         """Return tool definitions in OpenAI function calling format."""
         from fusion.tools.definitions import get_openai_tools
+
         return get_openai_tools()
 
     def as_mcp_tools(self) -> list[dict]:
         """Return tool definitions in MCP format."""
         from fusion.tools.definitions import get_mcp_tools
+
         return get_mcp_tools()
 
     def __enter__(self):

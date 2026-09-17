@@ -8,14 +8,20 @@ from sqlglot import exp
 from fusion.exceptions import GuardrailViolation
 
 # Statement types that are allowed to pass through guardrails
-_ALLOWED_TYPES = (
-    exp.Select,
-)
+_ALLOWED_TYPES = (exp.Select,)
 
 # Keywords that indicate destructive operations
 _DANGEROUS_KEYWORDS = {
-    "DROP", "DELETE", "INSERT", "UPDATE", "ALTER",
-    "TRUNCATE", "GRANT", "REVOKE", "CREATE", "REPLACE",
+    "DROP",
+    "DELETE",
+    "INSERT",
+    "UPDATE",
+    "ALTER",
+    "TRUNCATE",
+    "GRANT",
+    "REVOKE",
+    "CREATE",
+    "REPLACE",
 }
 
 # DuckDB functions that reach the local filesystem, network, or extension
@@ -23,14 +29,35 @@ _DANGEROUS_KEYWORDS = {
 # (e.g. `SELECT * FROM read_csv('/etc/passwd')`), so the statement-type
 # allowlist alone does not catch them. This is defense-in-depth on top of the
 # engine's `enable_external_access=FALSE` latch.
-_FORBIDDEN_FUNCTIONS = frozenset({
-    "read_csv", "read_csv_auto", "read_parquet", "parquet_scan",
-    "read_json", "read_json_auto", "read_json_objects", "read_ndjson",
-    "read_ndjson_auto", "read_ndjson_objects", "read_text", "read_blob",
-    "glob", "sniff_csv", "delta_scan", "iceberg_scan", "iceberg_metadata",
-    "iceberg_snapshots", "postgres_scan", "postgres_query", "mysql_scan",
-    "mysql_query", "sqlite_scan", "install", "load",
-})
+_FORBIDDEN_FUNCTIONS = frozenset(
+    {
+        "read_csv",
+        "read_csv_auto",
+        "read_parquet",
+        "parquet_scan",
+        "read_json",
+        "read_json_auto",
+        "read_json_objects",
+        "read_ndjson",
+        "read_ndjson_auto",
+        "read_ndjson_objects",
+        "read_text",
+        "read_blob",
+        "glob",
+        "sniff_csv",
+        "delta_scan",
+        "iceberg_scan",
+        "iceberg_metadata",
+        "iceberg_snapshots",
+        "postgres_scan",
+        "postgres_query",
+        "mysql_scan",
+        "mysql_query",
+        "sqlite_scan",
+        "install",
+        "load",
+    }
+)
 
 # Matches a forbidden function name immediately followed by `(`, case-insensitive.
 _FORBIDDEN_FN_RE = re.compile(
@@ -85,7 +112,7 @@ class SQLGuardrails:
 
         return True
 
-    def _validate_statement(self, statement: exp.Expression, original_sql: str) -> None:
+    def _validate_statement(self, statement: exp.Expr, original_sql: str) -> None:
         """Validate a single parsed SQL statement."""
         # Allow SELECT and CTE (WITH ... SELECT)
         if isinstance(statement, _ALLOWED_TYPES):
@@ -104,8 +131,7 @@ class SQLGuardrails:
         # Everything else is blocked
         stmt_type = type(statement).__name__
         raise GuardrailViolation(
-            f"Blocked {stmt_type} statement. Only SELECT queries are allowed: "
-            f"{original_sql[:100]}"
+            f"Blocked {stmt_type} statement. Only SELECT queries are allowed: {original_sql[:100]}"
         )
 
     def _has_multiple_statements(self, sql: str) -> bool:
@@ -138,9 +164,7 @@ class SQLGuardrails:
         upper_sql = sql.upper().strip()
         for keyword in _DANGEROUS_KEYWORDS:
             if upper_sql.startswith(keyword):
-                raise GuardrailViolation(
-                    f"Blocked SQL starting with {keyword}: {sql[:100]}"
-                )
+                raise GuardrailViolation(f"Blocked SQL starting with {keyword}: {sql[:100]}")
 
     @staticmethod
     def _remove_string_literals(sql: str) -> str:

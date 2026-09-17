@@ -23,7 +23,9 @@ _IDENTIFIER_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.]*$")
 def _validate_identifier(name: str, label: str = "identifier") -> None:
     """Validate that a name is a safe SQL identifier."""
     if not _IDENTIFIER_RE.match(name):
-        raise QueryError(f"Invalid {label}: '{name}'. Only alphanumeric, underscore, and dot allowed.")
+        raise QueryError(
+            f"Invalid {label}: '{name}'. Only alphanumeric, underscore, and dot allowed."
+        )
 
 
 class ToolExecutor:
@@ -105,17 +107,21 @@ class ToolExecutor:
                     except Exception:
                         pass
 
-                tables.append({
-                    "name": full_name,
-                    "row_count": row_count,
-                    "columns": len(table_meta.get("columns", [])),
-                    "loaded": is_loaded,
-                })
-            sources.append({
-                "source": source_name,
-                "type": source_info.get("type", "unknown"),
-                "tables": tables,
-            })
+                tables.append(
+                    {
+                        "name": full_name,
+                        "row_count": row_count,
+                        "columns": len(table_meta.get("columns", [])),
+                        "loaded": is_loaded,
+                    }
+                )
+            sources.append(
+                {
+                    "source": source_name,
+                    "type": source_info.get("type", "unknown"),
+                    "tables": tables,
+                }
+            )
 
         return {"sources": sources}
 
@@ -161,9 +167,7 @@ class ToolExecutor:
         limit = min(max(1, limit), MAX_RESULT_ROWS)
 
         # Try pushdown: use connector.fetch_data_filtered if table not loaded
-        pushdown_result = self._try_search_pushdown(
-            table, filter_column, filter_value, limit
-        )
+        pushdown_result = self._try_search_pushdown(table, filter_column, filter_value, limit)
         if pushdown_result is not None:
             return pushdown_result
 
@@ -198,12 +202,12 @@ class ToolExecutor:
 
         agg_func_upper = agg_func.upper()
         if agg_func_upper not in ALLOWED_AGG_FUNCS:
-            return {"error": f"Invalid aggregation function: {agg_func}. Allowed: {ALLOWED_AGG_FUNCS}"}
+            return {
+                "error": f"Invalid aggregation function: {agg_func}. Allowed: {ALLOWED_AGG_FUNCS}"
+            }
 
         # Try pushdown: send aggregation SQL to source connector
-        pushdown_result = self._try_aggregate_pushdown(
-            table, group_by, agg_column, agg_func_upper
-        )
+        pushdown_result = self._try_aggregate_pushdown(table, group_by, agg_column, agg_func_upper)
         if pushdown_result is not None:
             return pushdown_result
 
@@ -290,9 +294,7 @@ class ToolExecutor:
         try:
             with self._engine._lock:
                 # Get column info from PRAGMA
-                result = self._engine._conn.execute(
-                    f"PRAGMA table_info('{table}')"
-                ).fetchall()
+                result = self._engine._conn.execute(f"PRAGMA table_info('{table}')").fetchall()
 
             if not result:
                 return {"error": f"Materialized view '{table}' not found"}
@@ -300,17 +302,19 @@ class ToolExecutor:
             columns = []
             for row in result:
                 # PRAGMA table_info returns: cid, name, type, notnull, dflt_value, pk
-                columns.append({
-                    "name": row[1],
-                    "type": row[2],
-                    "nullable": not row[3],
-                })
+                columns.append(
+                    {
+                        "name": row[1],
+                        "type": row[2],
+                        "nullable": not row[3],
+                    }
+                )
 
             # Get row count
             with self._engine._lock:
-                row_count = self._engine._conn.execute(
-                    f"SELECT COUNT(*) FROM {table}"
-                ).fetchone()[0]
+                row_count = self._engine._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[
+                    0
+                ]
 
             return {
                 "table": table,

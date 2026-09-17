@@ -23,5 +23,3 @@ class CacheError(FusionError):
 
 class SchemaError(FusionError):
     """Raised when schema operations fail."""
-
-

@@ -1,5 +1,6 @@
 """Tests for OLAPEngine."""
 
+import duckdb
 import pytest
 
 from fusion.engine import OLAPEngine
@@ -17,7 +18,7 @@ class TestEngineSecurity:
     def test_file_access_blocked_at_duckdb_layer(self, engine):
         # Even bypassing guardrails, the enable_external_access=FALSE latch
         # prevents DuckDB from reading the local filesystem.
-        with pytest.raises(Exception):
+        with pytest.raises(duckdb.Error):
             engine.execute_raw("SELECT * FROM read_csv('/etc/passwd')").fetchall()
 
     def test_external_access_can_be_opted_in(self):

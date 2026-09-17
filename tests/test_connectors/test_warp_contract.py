@@ -51,12 +51,16 @@ class TestWarpConnectorContract:
         _stub_connect(("t",))
         # page1 is full (page_size=2) -> keep going; page2 is partial -> stop
         responses.add(
-            responses.GET, f"{BASE}/api/v1/mydb/t",
-            json={"data": [{"id": 1}, {"id": 2}]}, status=200,
+            responses.GET,
+            f"{BASE}/api/v1/mydb/t",
+            json={"data": [{"id": 1}, {"id": 2}]},
+            status=200,
         )
         responses.add(
-            responses.GET, f"{BASE}/api/v1/mydb/t",
-            json={"data": [{"id": 3}]}, status=200,
+            responses.GET,
+            f"{BASE}/api/v1/mydb/t",
+            json={"data": [{"id": 3}]},
+            status=200,
         )
         conn = _make_connector(page_size=2)
         conn.connect()
@@ -67,8 +71,10 @@ class TestWarpConnectorContract:
     def test_fetch_data_respects_max_rows(self):
         _stub_connect(("t",))
         responses.add(
-            responses.GET, f"{BASE}/api/v1/mydb/t",
-            json={"data": [{"id": 1}, {"id": 2}]}, status=200,
+            responses.GET,
+            f"{BASE}/api/v1/mydb/t",
+            json={"data": [{"id": 1}, {"id": 2}]},
+            status=200,
         )
         conn = _make_connector(page_size=10)
         conn.connect()
@@ -79,8 +85,10 @@ class TestWarpConnectorContract:
     def test_execute_query_sends_sql_in_body(self):
         _stub_connect(("t",))
         responses.add(
-            responses.POST, f"{BASE}/api/v1/mydb/query/execute",
-            json={"data": [{"cnt": 42}]}, status=200,
+            responses.POST,
+            f"{BASE}/api/v1/mydb/query/execute",
+            json={"data": [{"cnt": 42}]},
+            status=200,
         )
         conn = _make_connector()
         conn.connect()
@@ -92,8 +100,10 @@ class TestWarpConnectorContract:
     def test_execute_query_500_raises_query_error(self):
         _stub_connect(("t",))
         responses.add(
-            responses.POST, f"{BASE}/api/v1/mydb/query/execute",
-            json={"error": "bad"}, status=500,
+            responses.POST,
+            f"{BASE}/api/v1/mydb/query/execute",
+            json={"error": "bad"},
+            status=500,
         )
         conn = _make_connector()
         conn.connect()
@@ -111,8 +121,10 @@ class TestWarpConnectorContract:
     def test_get_schema_infers_types(self):
         _stub_connect(("t",))
         responses.add(
-            responses.GET, f"{BASE}/api/v1/mydb/t",
-            json={"data": [{"id": 1, "name": "a", "score": 1.5}]}, status=200,
+            responses.GET,
+            f"{BASE}/api/v1/mydb/t",
+            json={"data": [{"id": 1, "name": "a", "score": 1.5}]},
+            status=200,
         )
         conn = _make_connector()
         conn.connect()
@@ -126,8 +138,10 @@ class TestWarpConnectorContract:
     def test_discover_databases_contract(self):
         responses.add(responses.GET, f"{BASE}/health", json={}, status=200)
         responses.add(
-            responses.GET, f"{BASE}/info",
-            json={"databases": {"db1": {}, "db2": {}}}, status=200,
+            responses.GET,
+            f"{BASE}/info",
+            json={"databases": {"db1": {}, "db2": {}}},
+            status=200,
         )
         dbs = WarpConnector.discover_databases(BASE)
         assert set(dbs) == {"db1", "db2"}

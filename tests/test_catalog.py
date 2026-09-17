@@ -7,9 +7,16 @@ from fusion.exceptions import SchemaError
 
 class TestSchemaCatalog:
     def test_register_and_get_source(self, catalog):
-        catalog.register_source("pg_main", "postgresql", {
-            "users": {"columns": [{"name": "id", "type": "int", "nullable": False}], "row_count": 100},
-        })
+        catalog.register_source(
+            "pg_main",
+            "postgresql",
+            {
+                "users": {
+                    "columns": [{"name": "id", "type": "int", "nullable": False}],
+                    "row_count": 100,
+                },
+            },
+        )
         schema = catalog.get_schema("pg_main")
         assert schema["type"] == "postgresql"
         assert "users" in schema["tables"]
@@ -25,9 +32,16 @@ class TestSchemaCatalog:
             catalog.get_schema("test")
 
     def test_get_table_info(self, catalog):
-        catalog.register_source("db", "test", {
-            "users": {"columns": [{"name": "id", "type": "int", "nullable": False}], "row_count": 50},
-        })
+        catalog.register_source(
+            "db",
+            "test",
+            {
+                "users": {
+                    "columns": [{"name": "id", "type": "int", "nullable": False}],
+                    "row_count": 50,
+                },
+            },
+        )
         info = catalog.get_table_info("db.users")
         assert info["row_count"] == 50
         assert len(info["columns"]) == 1
@@ -45,15 +59,19 @@ class TestSchemaCatalog:
         assert "src2.t3" in tables
 
     def test_generate_context(self, catalog):
-        catalog.register_source("pg_main", "postgresql", {
-            "users": {
-                "columns": [
-                    {"name": "id", "type": "int", "nullable": False},
-                    {"name": "name", "type": "varchar", "nullable": True},
-                ],
-                "row_count": 100,
+        catalog.register_source(
+            "pg_main",
+            "postgresql",
+            {
+                "users": {
+                    "columns": [
+                        {"name": "id", "type": "int", "nullable": False},
+                        {"name": "name", "type": "varchar", "nullable": True},
+                    ],
+                    "row_count": 100,
+                },
             },
-        })
+        )
         context = catalog.generate_context()
         assert "pg_main" in context
         assert "users" in context

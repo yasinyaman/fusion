@@ -134,7 +134,9 @@ TOOL_DEFINITIONS: list[dict] = [
                 },
                 "refresh": {
                     "type": "string",
-                    "description": "Refresh interval: 'manual', 'hourly', 'daily', or 'every N minutes'",
+                    "description": (
+                        "Refresh interval: 'manual', 'hourly', 'daily', or 'every N minutes'"
+                    ),
                     "default": "manual",
                 },
             },
@@ -143,7 +145,9 @@ TOOL_DEFINITIONS: list[dict] = [
     },
     {
         "name": "list_views",
-        "description": "List all materialized views with their refresh schedule and last refresh time.",
+        "description": (
+            "List all materialized views with their refresh schedule and last refresh time."
+        ),
         "parameters": {
             "type": "object",
             "properties": {},
@@ -202,14 +206,16 @@ def get_openai_tools() -> list[dict]:
     """
     tools = []
     for defn in TOOL_DEFINITIONS:
-        tools.append({
-            "type": "function",
-            "function": {
-                "name": defn["name"],
-                "description": defn["description"],
-                "parameters": deepcopy(defn["parameters"]),
-            },
-        })
+        tools.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": defn["name"],
+                    "description": defn["description"],
+                    "parameters": deepcopy(defn["parameters"]),
+                },
+            }
+        )
     return tools
 
 
@@ -221,9 +227,11 @@ def get_mcp_tools() -> list[dict]:
     """
     tools = []
     for defn in TOOL_DEFINITIONS:
-        tools.append({
-            "name": defn["name"],
-            "description": defn["description"],
-            "inputSchema": deepcopy(defn["parameters"]),
-        })
+        tools.append(
+            {
+                "name": defn["name"],
+                "description": defn["description"],
+                "inputSchema": deepcopy(defn["parameters"]),
+            }
+        )
     return tools

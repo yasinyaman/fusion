@@ -9,6 +9,7 @@ from fusion.tools.executor import ToolExecutor
 def rest_client(engine_with_data):
     """FastAPI TestClient backed by engine with test data."""
     from fastapi.testclient import TestClient
+
     from fusion.tools.rest_server import create_app
 
     executor = ToolExecutor(engine_with_data)
@@ -99,6 +100,7 @@ class TestCacheEndpoint:
 class TestDebugEndpoint:
     def test_debug_config_available_outside_production(self, rest_client, monkeypatch):
         from fusion.config import Config
+
         monkeypatch.setattr(Config, "ENV", "development")
         monkeypatch.setattr(Config, "DEBUG_ENDPOINTS", "")
         resp = rest_client.get("/debug/config")
@@ -107,6 +109,7 @@ class TestDebugEndpoint:
 
     def test_debug_config_hidden_in_production(self, rest_client, monkeypatch):
         from fusion.config import Config
+
         monkeypatch.setattr(Config, "ENV", "production")
         monkeypatch.setattr(Config, "DEBUG_ENDPOINTS", "")
         resp = rest_client.get("/debug/config")
@@ -114,6 +117,7 @@ class TestDebugEndpoint:
 
     def test_debug_config_force_enabled_in_production(self, rest_client, monkeypatch):
         from fusion.config import Config
+
         monkeypatch.setattr(Config, "ENV", "production")
         monkeypatch.setattr(Config, "DEBUG_ENDPOINTS", "true")
         resp = rest_client.get("/debug/config")
@@ -125,28 +129,33 @@ class TestAuthMiddleware:
 
     def test_open_when_key_unset(self, rest_client, monkeypatch):
         from fusion.config import Config
+
         monkeypatch.setattr(Config, "API_KEY", "")
         assert rest_client.get("/sources").status_code == 200
 
     def test_missing_key_rejected(self, rest_client, monkeypatch):
         from fusion.config import Config
+
         monkeypatch.setattr(Config, "API_KEY", "topsecret")
         assert rest_client.get("/sources").status_code == 401
 
     def test_wrong_key_rejected(self, rest_client, monkeypatch):
         from fusion.config import Config
+
         monkeypatch.setattr(Config, "API_KEY", "topsecret")
         resp = rest_client.get("/sources", headers={"X-API-Key": "nope"})
         assert resp.status_code == 403
 
     def test_correct_key_allowed(self, rest_client, monkeypatch):
         from fusion.config import Config
+
         monkeypatch.setattr(Config, "API_KEY", "topsecret")
         resp = rest_client.get("/sources", headers={"X-API-Key": "topsecret"})
         assert resp.status_code == 200
 
     def test_health_excluded_from_auth(self, rest_client, monkeypatch):
         from fusion.config import Config
+
         monkeypatch.setattr(Config, "API_KEY", "topsecret")
         assert rest_client.get("/health").status_code == 200
 
@@ -191,9 +200,12 @@ class TestViewsEndpoint:
         assert "views" in resp.json()
 
     def test_create_view(self, rest_client):
-        resp = rest_client.post("/views", json={
-            "name": "test_view",
-            "sql": "SELECT COUNT(*) as cnt FROM test_db.users",
-        })
+        resp = rest_client.post(
+            "/views",
+            json={
+                "name": "test_view",
+                "sql": "SELECT COUNT(*) as cnt FROM test_db.users",
+            },
+        )
         assert resp.status_code == 200
         assert resp.json()["status"] == "created"

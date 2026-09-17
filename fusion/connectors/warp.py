@@ -7,7 +7,7 @@ fetch data from PostgreSQL/MySQL databases via its auto-discovery REST API.
 import ipaddress
 import logging
 import socket
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 import pandas as pd
@@ -47,16 +47,13 @@ def _validate_base_url(url: str) -> None:
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise ConnectionError(
-            f"Unsupported Warp URL scheme '{parsed.scheme}'. "
-            f"Only http/https are allowed: {url}"
+            f"Unsupported Warp URL scheme '{parsed.scheme}'. Only http/https are allowed: {url}"
         )
     host = parsed.hostname
     if not host:
         raise ConnectionError(f"Invalid Warp URL (no host): {url}")
     if host.lower() in _BLOCKED_HOSTNAMES or _is_blocked_ip(host):
-        raise ConnectionError(
-            f"Blocked Warp host '{host}' (cloud metadata / link-local address)."
-        )
+        raise ConnectionError(f"Blocked Warp host '{host}' (cloud metadata / link-local address).")
     # Best-effort: block hostnames that resolve to a link-local/metadata address.
     try:
         resolved = socket.gethostbyname(host)
@@ -88,7 +85,7 @@ class WarpConnector(BaseConnector):
         self._database = config.get("database", name)
         self._timeout = config.get("timeout", DEFAULT_TIMEOUT)
         self._page_size = config.get("page_size", DEFAULT_PAGE_SIZE)
-        self._session: Optional[requests.Session] = None
+        self._session: requests.Session | None = None
         self._tables: list[str] = []
 
     def _get_session(self) -> requests.Session:
@@ -115,13 +112,9 @@ class WarpConnector(BaseConnector):
             )
             resp.raise_for_status()
         except requests.ConnectionError as e:
-            raise ConnectionError(
-                f"Cannot connect to Warp at {self._base_url}: {e}"
-            ) from e
+            raise ConnectionError(f"Cannot connect to Warp at {self._base_url}: {e}") from e
         except requests.HTTPError as e:
-            raise ConnectionError(
-                f"Warp health check failed: {e}"
-            ) from e
+            raise ConnectionError(f"Warp health check failed: {e}") from e
 
         # Discover tables via /info endpoint
         try:
@@ -135,14 +128,14 @@ class WarpConnector(BaseConnector):
             # Warp /info returns database and table information
             self._tables = self._extract_tables(info)
         except requests.RequestException as e:
-            raise ConnectionError(
-                f"Failed to discover tables from Warp: {e}"
-            ) from e
+            raise ConnectionError(f"Failed to discover tables from Warp: {e}") from e
 
         self._connected = True
         logger.info(
             "Connected to Warp at %s (database=%s, tables=%d)",
-            self._base_url, self._database, len(self._tables),
+            self._base_url,
+            self._database,
+            len(self._tables),
         )
 
     def _extract_tables(self, info: Any) -> list[str]:
@@ -167,9 +160,7 @@ class WarpConnector(BaseConnector):
                     for db_name, db_info in dbs.items():
                         if db_name == self._database or not self._database:
                             raw_tables = (
-                                db_info.get("tables", [])
-                                if isinstance(db_info, dict)
-                                else []
+                                db_info.get("tables", []) if isinstance(db_info, dict) else []
                             )
                             for t in raw_tables:
                                 if isinstance(t, str):
@@ -198,7 +189,7 @@ class WarpConnector(BaseConnector):
 
         return tables
 
-    def fetch_data(self, table: str, max_rows: Optional[int] = None) -> pd.DataFrame:
+    def fetch_data(self, table: str, max_rows: int | None = None) -> pd.DataFrame:
         """Fetch rows from a table via Warp REST API with pagination.
 
         Stops early once ``max_rows`` rows have been collected (None = no cap).
@@ -223,9 +214,7 @@ class WarpConnector(BaseConnector):
                 resp.raise_for_status()
                 data = resp.json()
             except requests.RequestException as e:
-                raise QueryError(
-                    f"Failed to fetch data from {table}: {e}"
-                ) from e
+                raise QueryError(f"Failed to fetch data from {table}: {e}") from e
 
             # Handle different response formats
             rows = self._extract_rows(data)
@@ -237,9 +226,7 @@ class WarpConnector(BaseConnector):
             # Stop if we have reached the ingest cap (and log the truncation).
             if max_rows is not None and len(all_rows) >= max_rows:
                 all_rows = all_rows[:max_rows]
-                logger.warning(
-                    "Table %s truncated to max_rows=%d during ingest", table, max_rows
-                )
+                logger.warning("Table %s truncated to max_rows=%d during ingest", table, max_rows)
                 break
 
             # If we got fewer rows than page size, we're done
@@ -293,11 +280,13 @@ class WarpConnector(BaseConnector):
                         dtype = str(sample_df[col_name].dtype)
                         col_type = self._pandas_to_sql_type(dtype)
                         has_nulls = sample_df[col_name].isna().any()
-                        columns.append({
-                            "name": col_name,
-                            "type": col_type,
-                            "nullable": bool(has_nulls),
-                        })
+                        columns.append(
+                            {
+                                "name": col_name,
+                                "type": col_type,
+                                "nullable": bool(has_nulls),
+                            }
+                        )
                     schema[table] = {
                         "columns": columns,
                         "row_count": self._get_row_count(table, data),
@@ -370,14 +359,10 @@ class WarpConnector(BaseConnector):
         try:
             return self.execute_query(sql)
         except Exception:
-            logger.warning(
-                "execute_query failed for %s, falling back to full fetch", table
-            )
-            return super().fetch_data_filtered(
-                table, filters=filters, columns=columns, limit=limit
-            )
+            logger.warning("execute_query failed for %s, falling back to full fetch", table)
+            return super().fetch_data_filtered(table, filters=filters, columns=columns, limit=limit)
 
-    def execute_query(self, sql: str, params: Optional[list] = None) -> pd.DataFrame:
+    def execute_query(self, sql: str, params: list | None = None) -> pd.DataFrame:
         """Execute a SQL query via Warp's query endpoint.
 
         This sends the SQL to Warp's backend database (not DuckDB).
@@ -445,13 +430,9 @@ class WarpConnector(BaseConnector):
             resp.raise_for_status()
             info = resp.json()
         except requests.ConnectionError as e:
-            raise ConnectionError(
-                f"Cannot connect to Warp at {base_url}: {e}"
-            ) from e
+            raise ConnectionError(f"Cannot connect to Warp at {base_url}: {e}") from e
         except requests.RequestException as e:
-            raise ConnectionError(
-                f"Failed to discover databases from Warp: {e}"
-            ) from e
+            raise ConnectionError(f"Failed to discover databases from Warp: {e}") from e
         finally:
             session.close()
 

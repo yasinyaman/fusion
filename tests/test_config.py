@@ -6,9 +6,7 @@ from fusion.config import Config
 class TestConfigValidation:
     def test_production_placeholder_key_fails(self, monkeypatch):
         monkeypatch.setattr(Config, "ENV", "production")
-        monkeypatch.setattr(
-            Config, "API_KEY", "your-secure-api-key-here-change-in-production"
-        )
+        monkeypatch.setattr(Config, "API_KEY", "your-secure-api-key-here-change-in-production")
         errors = Config.validate()
         assert any("API_KEY" in e for e in errors)
 

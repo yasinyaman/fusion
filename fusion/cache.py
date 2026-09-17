@@ -4,7 +4,7 @@ import hashlib
 import threading
 import time
 from collections import OrderedDict
-from typing import Any, Optional
+from typing import Any
 
 
 class QueryCache:
@@ -18,7 +18,7 @@ class QueryCache:
         self._hits = 0
         self._misses = 0
 
-    def get(self, sql: str, params: Optional[Any] = None) -> Optional[Any]:
+    def get(self, sql: str, params: Any | None = None) -> Any | None:
         """Get cached result for a query. Returns None on cache miss."""
         key = self._hash_query(sql, params)
         with self._lock:
@@ -39,9 +39,7 @@ class QueryCache:
             self._hits += 1
             return entry["result"]
 
-    def put(
-        self, sql: str, result: Any, ttl: Optional[int] = None, params: Optional[Any] = None
-    ) -> None:
+    def put(self, sql: str, result: Any, ttl: int | None = None, params: Any | None = None) -> None:
         """Store a query result in cache."""
         key = self._hash_query(sql, params)
         ttl = ttl if ttl is not None else self._default_ttl
@@ -90,7 +88,7 @@ class QueryCache:
             }
 
     @staticmethod
-    def _hash_query(sql: str, params: Optional[Any] = None) -> str:
+    def _hash_query(sql: str, params: Any | None = None) -> str:
         """Normalize and hash a SQL query (plus bound params) for cache key."""
         # Normalize whitespace and case for consistent caching
         normalized = " ".join(sql.split()).strip().upper()

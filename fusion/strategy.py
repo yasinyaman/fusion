@@ -103,7 +103,7 @@ class FetchStrategy:
 
         # Collect CTE names so we can skip them
         cte_names: set[str] = set()
-        for statement in (parsed or []):
+        for statement in parsed or []:
             if statement is None:
                 continue
             for cte in statement.find_all(exp.CTE):
@@ -111,7 +111,7 @@ class FetchStrategy:
                 if alias:
                     cte_names.add(alias.lower())
 
-        for statement in (parsed or []):
+        for statement in parsed or []:
             if statement is None:
                 continue
             for table_node in statement.find_all(exp.Table):
@@ -143,13 +143,10 @@ class FetchStrategy:
             plan.is_single_source = len(sources) == 1
             plan.source_name = next(iter(sources)) if plan.is_single_source else None
 
-            plan.has_mv_reference = any(
-                t.table.startswith("mv_") for t in plan.targets
-            )
+            plan.has_mv_reference = any(t.table.startswith("mv_") for t in plan.targets)
 
             plan.all_targets_unloaded = all(
                 not self._catalog.is_loaded(t.full_name) for t in plan.targets
             )
 
         return plan
-

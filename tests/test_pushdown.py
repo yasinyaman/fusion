@@ -9,23 +9,31 @@ from fusion import OLAPEngine
 from fusion.catalog import SchemaCatalog
 from fusion.connectors.base import BaseConnector
 from fusion.connectors.warp import WarpConnector
+from fusion.exceptions import QueryError
 from fusion.strategy import FetchPlan, FetchStrategy
 from fusion.tools.executor import ToolExecutor
-
 
 # ---------------------------------------------------------------------------
 # Connector: supports_pushdown property
 # ---------------------------------------------------------------------------
+
 
 class TestConnectorSupportsPushdown:
     def test_base_connector_default_false(self):
         """BaseConnector.supports_pushdown defaults to False."""
 
         class DummyConnector(BaseConnector):
-            def connect(self): pass
-            def fetch_data(self, table): return pd.DataFrame()
-            def get_schema(self): return {}
-            def close(self): pass
+            def connect(self):
+                pass
+
+            def fetch_data(self, table):
+                return pd.DataFrame()
+
+            def get_schema(self):
+                return {}
+
+            def close(self):
+                pass
 
         conn = DummyConnector("dummy", {})
         assert conn.supports_pushdown is False
@@ -39,6 +47,7 @@ class TestConnectorSupportsPushdown:
 # ---------------------------------------------------------------------------
 # FetchPlan: pushdown eligibility
 # ---------------------------------------------------------------------------
+
 
 class TestFetchPlanPushdownEligibility:
     def test_empty_plan_not_eligible(self):
@@ -86,26 +95,35 @@ class TestFetchPlanPushdownEligibility:
 # FetchStrategy: plan_for_sql computes pushdown fields
 # ---------------------------------------------------------------------------
 
+
 class TestStrategyPushdownFields:
     @pytest.fixture
     def catalog(self):
         cat = SchemaCatalog()
-        cat.register_source("warp_main", "warp", {
-            "orders": {
-                "columns": [{"name": "id", "type": "integer", "nullable": False}],
-                "row_count": 1000,
+        cat.register_source(
+            "warp_main",
+            "warp",
+            {
+                "orders": {
+                    "columns": [{"name": "id", "type": "integer", "nullable": False}],
+                    "row_count": 1000,
+                },
+                "users": {
+                    "columns": [{"name": "id", "type": "integer", "nullable": False}],
+                    "row_count": 500,
+                },
             },
-            "users": {
-                "columns": [{"name": "id", "type": "integer", "nullable": False}],
-                "row_count": 500,
+        )
+        cat.register_source(
+            "warp_analytics",
+            "warp",
+            {
+                "events": {
+                    "columns": [{"name": "id", "type": "integer", "nullable": False}],
+                    "row_count": 5000,
+                },
             },
-        })
-        cat.register_source("warp_analytics", "warp", {
-            "events": {
-                "columns": [{"name": "id", "type": "integer", "nullable": False}],
-                "row_count": 5000,
-            },
-        })
+        )
         return cat
 
     @pytest.fixture
@@ -168,6 +186,7 @@ class TestStrategyPushdownFields:
 # Engine: pushdown routing in sql()
 # ---------------------------------------------------------------------------
 
+
 class TestEnginePushdown:
     @pytest.fixture
     def engine_with_connector(self):
@@ -176,31 +195,37 @@ class TestEnginePushdown:
 
         # Register metadata (but do NOT load tables)
         engine.execute_raw("CREATE SCHEMA IF NOT EXISTS warp_main")
-        engine.catalog.register_source("warp_main", "warp", {
-            "orders": {
-                "columns": [
-                    {"name": "id", "type": "integer", "nullable": False},
-                    {"name": "amount", "type": "double", "nullable": False},
-                ],
-                "row_count": 1000,
+        engine.catalog.register_source(
+            "warp_main",
+            "warp",
+            {
+                "orders": {
+                    "columns": [
+                        {"name": "id", "type": "integer", "nullable": False},
+                        {"name": "amount", "type": "double", "nullable": False},
+                    ],
+                    "row_count": 1000,
+                },
+                "users": {
+                    "columns": [
+                        {"name": "id", "type": "integer", "nullable": False},
+                        {"name": "name", "type": "varchar", "nullable": False},
+                    ],
+                    "row_count": 500,
+                },
             },
-            "users": {
-                "columns": [
-                    {"name": "id", "type": "integer", "nullable": False},
-                    {"name": "name", "type": "varchar", "nullable": False},
-                ],
-                "row_count": 500,
-            },
-        })
+        )
         # Tables are NOT loaded (no mark_loaded)
 
         # Create mock connector
         mock_connector = MagicMock()
         mock_connector.supports_pushdown = True
-        mock_connector.execute_query.return_value = pd.DataFrame({
-            "id": [1, 2, 3],
-            "amount": [100.0, 200.0, 300.0],
-        })
+        mock_connector.execute_query.return_value = pd.DataFrame(
+            {
+                "id": [1, 2, 3],
+                "amount": [100.0, 200.0, 300.0],
+            }
+        )
         engine._connectors["warp_main"] = mock_connector
 
         yield engine, mock_connector
@@ -246,9 +271,12 @@ class TestEnginePushdown:
         mock_connector.execute_query.side_effect = Exception("connection lost")
 
         # Should also set fetch_data to return something for the fallback
-        mock_connector.fetch_data.return_value = pd.DataFrame({
-            "id": [1, 2], "amount": [10.0, 20.0],
-        })
+        mock_connector.fetch_data.return_value = pd.DataFrame(
+            {
+                "id": [1, 2],
+                "amount": [10.0, 20.0],
+            }
+        )
 
         result = engine.sql("SELECT * FROM warp_main.orders")
         # Fallback should have loaded the table and run on DuckDB
@@ -258,9 +286,12 @@ class TestEnginePushdown:
         engine, mock_connector = engine_with_connector
 
         # Load the table first
-        mock_connector.fetch_data.return_value = pd.DataFrame({
-            "id": [1, 2], "amount": [10.0, 20.0],
-        })
+        mock_connector.fetch_data.return_value = pd.DataFrame(
+            {
+                "id": [1, 2],
+                "amount": [10.0, 20.0],
+            }
+        )
         engine.ensure_tables_loaded(["warp_main.orders"])
 
         # Reset mock to track new calls
@@ -276,7 +307,7 @@ class TestEnginePushdown:
 
         # With auto_load=False, pushdown should not be attempted
         # But the query will fail since table isn't loaded
-        with pytest.raises(Exception):
+        with pytest.raises(QueryError):
             engine.sql("SELECT * FROM warp_main.orders", auto_load=False)
 
         mock_connector.execute_query.assert_not_called()
@@ -286,9 +317,12 @@ class TestEnginePushdown:
         mock_connector.supports_pushdown = False
 
         # Should fallback to loading the table
-        mock_connector.fetch_data.return_value = pd.DataFrame({
-            "id": [1], "amount": [10.0],
-        })
+        mock_connector.fetch_data.return_value = pd.DataFrame(
+            {
+                "id": [1],
+                "amount": [10.0],
+            }
+        )
 
         engine.sql("SELECT * FROM warp_main.orders")
         mock_connector.execute_query.assert_not_called()
@@ -327,32 +361,45 @@ class TestRewriteSqlForPushdown:
 # Executor: tool-level pushdown (search_data, aggregate_data)
 # ---------------------------------------------------------------------------
 
+
 class TestExecutorSearchPushdown:
     @pytest.fixture
     def executor_with_connector(self):
         engine = OLAPEngine(database=":memory:", threads=2, memory_limit="512MB")
 
         engine.execute_raw("CREATE SCHEMA IF NOT EXISTS warp_main")
-        engine.catalog.register_source("warp_main", "warp", {
-            "users": {
-                "columns": [
-                    {"name": "id", "type": "integer", "nullable": False},
-                    {"name": "name", "type": "varchar", "nullable": False},
-                    {"name": "segment", "type": "varchar", "nullable": True},
-                ],
-                "row_count": 100,
+        engine.catalog.register_source(
+            "warp_main",
+            "warp",
+            {
+                "users": {
+                    "columns": [
+                        {"name": "id", "type": "integer", "nullable": False},
+                        {"name": "name", "type": "varchar", "nullable": False},
+                        {"name": "segment", "type": "varchar", "nullable": True},
+                    ],
+                    "row_count": 100,
+                },
             },
-        })
+        )
         # NOT loaded
 
         mock_connector = MagicMock()
         mock_connector.supports_pushdown = True
-        mock_connector.fetch_data_filtered.return_value = pd.DataFrame({
-            "id": [1], "name": ["Alice"], "segment": ["premium"],
-        })
-        mock_connector.execute_query.return_value = pd.DataFrame({
-            "id": [1, 2], "name": ["Alice", "Bob"], "segment": ["premium", "basic"],
-        })
+        mock_connector.fetch_data_filtered.return_value = pd.DataFrame(
+            {
+                "id": [1],
+                "name": ["Alice"],
+                "segment": ["premium"],
+            }
+        )
+        mock_connector.execute_query.return_value = pd.DataFrame(
+            {
+                "id": [1, 2],
+                "name": ["Alice", "Bob"],
+                "segment": ["premium", "basic"],
+            }
+        )
         engine._connectors["warp_main"] = mock_connector
 
         executor = ToolExecutor(engine)
@@ -380,11 +427,13 @@ class TestExecutorSearchPushdown:
         executor, mock_conn = executor_with_connector
 
         # Load the table first
-        mock_conn.fetch_data.return_value = pd.DataFrame({
-            "id": [1, 2],
-            "name": ["Alice", "Bob"],
-            "segment": ["premium", "basic"],
-        })
+        mock_conn.fetch_data.return_value = pd.DataFrame(
+            {
+                "id": [1, 2],
+                "name": ["Alice", "Bob"],
+                "segment": ["premium", "basic"],
+            }
+        )
         executor._engine.ensure_tables_loaded(["warp_main.users"])
         mock_conn.reset_mock()
 
@@ -402,9 +451,13 @@ class TestExecutorSearchPushdown:
         mock_conn.execute_query.side_effect = Exception("network error")
 
         # Should fallback to DuckDB (which will load the table via fetch_data)
-        mock_conn.fetch_data.return_value = pd.DataFrame({
-            "id": [1], "name": ["Alice"], "segment": ["premium"],
-        })
+        mock_conn.fetch_data.return_value = pd.DataFrame(
+            {
+                "id": [1],
+                "name": ["Alice"],
+                "segment": ["premium"],
+            }
+        )
 
         result = executor.search_data("warp_main.users", "name", "Alice")
         assert result["row_count"] == 1
@@ -416,24 +469,30 @@ class TestExecutorAggregatePushdown:
         engine = OLAPEngine(database=":memory:", threads=2, memory_limit="512MB")
 
         engine.execute_raw("CREATE SCHEMA IF NOT EXISTS warp_main")
-        engine.catalog.register_source("warp_main", "warp", {
-            "orders": {
-                "columns": [
-                    {"name": "id", "type": "integer", "nullable": False},
-                    {"name": "product", "type": "varchar", "nullable": False},
-                    {"name": "amount", "type": "double", "nullable": False},
-                ],
-                "row_count": 1000,
+        engine.catalog.register_source(
+            "warp_main",
+            "warp",
+            {
+                "orders": {
+                    "columns": [
+                        {"name": "id", "type": "integer", "nullable": False},
+                        {"name": "product", "type": "varchar", "nullable": False},
+                        {"name": "amount", "type": "double", "nullable": False},
+                    ],
+                    "row_count": 1000,
+                },
             },
-        })
+        )
         # NOT loaded
 
         mock_connector = MagicMock()
         mock_connector.supports_pushdown = True
-        mock_connector.execute_query.return_value = pd.DataFrame({
-            "product": ["A", "B", "C"],
-            "sum_amount": [1000.0, 500.0, 250.0],
-        })
+        mock_connector.execute_query.return_value = pd.DataFrame(
+            {
+                "product": ["A", "B", "C"],
+                "sum_amount": [1000.0, 500.0, 250.0],
+            }
+        )
         engine._connectors["warp_main"] = mock_connector
 
         executor = ToolExecutor(engine)
@@ -442,9 +501,7 @@ class TestExecutorAggregatePushdown:
 
     def test_aggregate_pushdown(self, executor_with_connector):
         executor, mock_conn = executor_with_connector
-        result = executor.aggregate_data(
-            "warp_main.orders", "product", "amount", "SUM"
-        )
+        result = executor.aggregate_data("warp_main.orders", "product", "amount", "SUM")
 
         mock_conn.execute_query.assert_called_once()
         assert result["row_count"] == 3
@@ -454,17 +511,17 @@ class TestExecutorAggregatePushdown:
         executor, mock_conn = executor_with_connector
 
         # Load the table
-        mock_conn.fetch_data.return_value = pd.DataFrame({
-            "id": [1, 2, 3],
-            "product": ["A", "A", "B"],
-            "amount": [100.0, 200.0, 50.0],
-        })
+        mock_conn.fetch_data.return_value = pd.DataFrame(
+            {
+                "id": [1, 2, 3],
+                "product": ["A", "A", "B"],
+                "amount": [100.0, 200.0, 50.0],
+            }
+        )
         executor._engine.ensure_tables_loaded(["warp_main.orders"])
         mock_conn.reset_mock()
 
-        result = executor.aggregate_data(
-            "warp_main.orders", "product", "amount", "SUM"
-        )
+        result = executor.aggregate_data("warp_main.orders", "product", "amount", "SUM")
         mock_conn.execute_query.assert_not_called()
         assert result["row_count"] == 2
 
@@ -474,15 +531,15 @@ class TestExecutorAggregatePushdown:
         mock_conn.execute_query.side_effect = Exception("query failed")
 
         # Fallback: DuckDB loads the table
-        mock_conn.fetch_data.return_value = pd.DataFrame({
-            "id": [1, 2],
-            "product": ["A", "B"],
-            "amount": [100.0, 50.0],
-        })
-
-        result = executor.aggregate_data(
-            "warp_main.orders", "product", "amount", "SUM"
+        mock_conn.fetch_data.return_value = pd.DataFrame(
+            {
+                "id": [1, 2],
+                "product": ["A", "B"],
+                "amount": [100.0, 50.0],
+            }
         )
+
+        result = executor.aggregate_data("warp_main.orders", "product", "amount", "SUM")
         assert result["row_count"] == 2
 
 

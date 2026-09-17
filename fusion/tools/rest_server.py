@@ -110,34 +110,34 @@ def create_app(
 
     # --- Rate Limiter ---
     limiter = Limiter(key_func=_rate_limit_key, default_limits=[config.RATE_LIMIT])
-    
+
     # --- Lifespan (startup/shutdown) ---
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         """Handle startup and shutdown events."""
         # Startup
         logger.info(f"Fusion REST API starting (env={config.ENV}, version=0.5.0)")
-        
+
         # Start backup scheduler if enabled
         if _backup_manager and config.BACKUP_ENABLED:
             _backup_manager.start()
             logger.info("Backup scheduler started")
-        
+
         yield
-        
+
         # Shutdown
         logger.info("Fusion REST API shutting down...")
-        
+
         # Stop backup scheduler
         if _backup_manager:
             _backup_manager.stop()
-        
+
         # Close engine
         if _engine:
             _engine.close()
-        
+
         logger.info("Shutdown complete")
-    
+
     # --- App ---
     app = FastAPI(
         title="Fusion OLAP API",
@@ -148,7 +148,7 @@ def create_app(
         version="0.5.0",
         lifespan=lifespan,
     )
-    
+
     # Add rate limiter to app state
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
@@ -156,10 +156,10 @@ def create_app(
     # --- Middleware Stack (order matters) ---
     # 1. Structured logging (outermost - logs everything)
     app.add_middleware(StructuredLoggingMiddleware)
-    
+
     # 2. Authentication
     app.add_middleware(AuthMiddleware)
-    
+
     # 3. CORS (configured from environment)
     app.add_middleware(
         CORSMiddleware,
@@ -176,7 +176,7 @@ def create_app(
     def _exec():
         """Get the executor — injected or global."""
         return _injected_executor if _injected_executor is not None else _get_executor()
-    
+
     def _backup():
         """Get the backup manager — injected or global."""
         return _injected_backup if _injected_backup is not None else _backup_manager
@@ -185,16 +185,19 @@ def create_app(
     @app.exception_handler(GuardrailViolation)
     async def guardrail_handler(request, exc):
         from fastapi.responses import JSONResponse
+
         return JSONResponse(status_code=403, content={"error": str(exc)})
 
     @app.exception_handler(QueryError)
     async def query_error_handler(request, exc):
         from fastapi.responses import JSONResponse
+
         return JSONResponse(status_code=400, content={"error": str(exc)})
 
     @app.exception_handler(SchemaError)
     async def schema_error_handler(request, exc):
         from fastapi.responses import JSONResponse
+
         return JSONResponse(status_code=400, content={"error": str(exc)})
 
     def _handle_result(result: dict):
@@ -218,7 +221,7 @@ def create_app(
             "version": "0.5.0",
             "environment": config.ENV,
         }
-    
+
     @app.get("/readiness")
     def readiness():
         """Readiness check (validates connections and dependencies)."""
@@ -232,7 +235,7 @@ def create_app(
                         "reason": "Executor not initialized",
                     },
                 )
-            
+
             # Check if engine has connected sources
             sources = _exec().list_sources()
             if not sources.get("sources"):
@@ -243,14 +246,14 @@ def create_app(
                         "reason": "No data sources connected",
                     },
                 )
-            
+
             # All checks passed
             return {
                 "status": "ready",
                 "version": "0.5.0",
                 "sources": len(sources.get("sources", [])),
             }
-        
+
         except Exception as e:
             logger.error(f"Readiness check failed: {e}")
             return JSONResponse(
@@ -260,7 +263,7 @@ def create_app(
                     "reason": str(e),
                 },
             )
-    
+
     @app.get("/tools")
     def list_tools():
         """List all available analytics tools."""
@@ -268,9 +271,9 @@ def create_app(
 
     # --- Generic Tool Dispatch ---
     @app.post("/tools/{tool_name}")
-    def execute_tool(tool_name: str, arguments: dict = {}):
+    def execute_tool(tool_name: str, arguments: dict | None = None):
         """Execute any tool by name. Body is the arguments dict."""
-        result = _exec().execute(tool_name, arguments)
+        result = _exec().execute(tool_name, arguments or {})
         return _handle_result(result)
 
     # --- Convenience Endpoints ---
@@ -290,16 +293,12 @@ def create_app(
 
     @app.post("/search")
     def search(req: SearchRequest):
-        result = _exec().search_data(
-            req.table, req.filter_column, req.filter_value, req.limit
-        )
+        result = _exec().search_data(req.table, req.filter_column, req.filter_value, req.limit)
         return _handle_result(result)
 
     @app.post("/aggregate")
     def aggregate(req: AggregateRequest):
-        result = _exec().aggregate_data(
-            req.table, req.group_by, req.agg_column, req.agg_func
-        )
+        result = _exec().aggregate_data(req.table, req.group_by, req.agg_column, req.agg_func)
         return _handle_result(result)
 
     @app.get("/views")
@@ -324,7 +323,7 @@ def create_app(
     @app.get("/cache/stats")
     def cache_stats():
         return _exec().cache_stats()
-    
+
     # --- Backup & Restore ---
     @app.get("/backup/list")
     @limiter.limit("10/minute")
@@ -337,8 +336,8 @@ def create_app(
             return {"backups": backups, "count": len(backups)}
         except Exception as e:
             logger.error(f"Failed to list backups: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
     @app.post("/backup/create")
     @limiter.limit("5/minute")
     def create_backup(request: Request):
@@ -353,15 +352,15 @@ def create_app(
             }
         except Exception as e:
             logger.error(f"Failed to create backup: {e}")
-            raise HTTPException(status_code=500, detail=str(e))
-    
+            raise HTTPException(status_code=500, detail=str(e)) from e
+
     @app.get("/backup/stats")
     def backup_stats():
         """Get backup manager statistics."""
         if not _backup():
             return {"error": "Backup manager not initialized"}
         return _backup().get_stats()
-    
+
     # --- Admin/Debug ---
     @app.get("/debug/config")
     def debug_config():
@@ -437,7 +436,7 @@ def main():
         help="Enable auto-reload for development",
     )
     args = parser.parse_args()
-    
+
     # Fail fast on fatal misconfiguration (e.g. production without an API key)
     config_errors = config.validate()
     if config_errors:
@@ -489,21 +488,29 @@ def main():
             )
             databases = [args.database]
         for db_name in databases:
-            _engine.connect_source(db_name, {
-                "type": "warp",
-                "base_url": warp_url,
-                "database": db_name,
-            })
+            _engine.connect_source(
+                db_name,
+                {
+                    "type": "warp",
+                    "base_url": warp_url,
+                    "database": db_name,
+                },
+            )
         logger.info(
             "Auto-discovered %d databases from %s: %s",
-            len(databases), warp_url, databases,
+            len(databases),
+            warp_url,
+            databases,
         )
     else:
-        _engine.connect_source(args.database, {
-            "type": "warp",
-            "base_url": warp_url,
-            "database": args.database,
-        })
+        _engine.connect_source(
+            args.database,
+            {
+                "type": "warp",
+                "base_url": warp_url,
+                "database": args.database,
+            },
+        )
 
     # Connect additional sources
     for source_str in args.source:
@@ -512,36 +519,39 @@ def main():
         src_url = parts.get("url", "")
         src_db = parts.get("db", src_name)
         if src_name and src_url:
-            _engine.connect_source(src_name, {
-                "type": "warp",
-                "base_url": src_url,
-                "database": src_db,
-            })
+            _engine.connect_source(
+                src_name,
+                {
+                    "type": "warp",
+                    "base_url": src_url,
+                    "database": src_db,
+                },
+            )
 
     _executor = ToolExecutor(_engine)
-    
+
     # Initialize backup manager
     _backup_manager = BackupManager(_engine)
 
     # Graceful shutdown handler
     shutdown_event = False
-    
+
     def signal_handler(signum, frame):
         nonlocal shutdown_event
         logger.info(f"Received signal {signum}, initiating graceful shutdown...")
         shutdown_event = True
-        
+
         # Stop backup manager
         if _backup_manager:
             _backup_manager.stop()
-        
+
         # Close engine
         if _engine:
             _engine.close()
-        
+
         logger.info("Graceful shutdown complete")
         sys.exit(0)
-    
+
     # Register signal handlers
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
@@ -562,7 +572,7 @@ def main():
     import uvicorn
 
     app = create_app()
-    
+
     # Run with graceful shutdown support
     uvicorn_config = uvicorn.Config(
         app=app,

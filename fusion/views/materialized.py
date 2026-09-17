@@ -48,9 +48,7 @@ class MaterializedViewManager:
 
         # Create the materialized view as a table
         try:
-            self._engine.execute_raw(
-                f"CREATE OR REPLACE TABLE {table_name} AS ({sql})"
-            )
+            self._engine.execute_raw(f"CREATE OR REPLACE TABLE {table_name} AS ({sql})")
         except Exception as e:
             raise QueryError(f"Failed to create materialized view '{name}': {e}") from e
 
@@ -132,13 +130,15 @@ class MaterializedViewManager:
         """List all materialized views with metadata."""
         result = []
         for name, info in self._views.items():
-            result.append({
-                "name": name,
-                "table_name": info["table_name"],
-                "refresh": info["refresh"],
-                "priority": info["priority"],
-                "last_refresh": info["last_refresh"],
-            })
+            result.append(
+                {
+                    "name": name,
+                    "table_name": info["table_name"],
+                    "refresh": info["refresh"],
+                    "priority": info["priority"],
+                    "last_refresh": info["last_refresh"],
+                }
+            )
         return result
 
     def _parse_refresh_interval(self, refresh: str) -> int:
@@ -164,6 +164,7 @@ class MaterializedViewManager:
 
     def _schedule_refresh(self, name: str, interval: int) -> None:
         """Schedule periodic refresh for a view."""
+
         def _refresh_loop():
             if name in self._views:
                 try:
@@ -184,6 +185,6 @@ class MaterializedViewManager:
 
     def close(self) -> None:
         """Cancel all scheduled refreshes."""
-        for name, timer in self._timers.items():
+        for timer in self._timers.values():
             timer.cancel()
         self._timers.clear()

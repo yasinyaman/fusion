@@ -14,7 +14,6 @@ import pytest
 from fusion.engine import OLAPEngine
 from fusion.tools.executor import ToolExecutor
 
-
 # ---------------------------------------------------------------------------
 # Mock Warp HTTP layer
 # ---------------------------------------------------------------------------
@@ -71,21 +70,23 @@ def _warp_get_handler(url, params=None, timeout=None):
         return _make_mock_response({"status": "ok"})
 
     if "/info" in url:
-        return _make_mock_response({
-            "databases": {
-                "ecommerce": {
-                    "tables": list(MOCK_DB.keys()),
-                    "table_count": len(MOCK_DB),
+        return _make_mock_response(
+            {
+                "databases": {
+                    "ecommerce": {
+                        "tables": list(MOCK_DB.keys()),
+                        "table_count": len(MOCK_DB),
+                    }
                 }
             }
-        })
+        )
 
     # Table data endpoint: /api/v1/{db}/{table}?limit=X&offset=Y
     for table_name, table_data in MOCK_DB.items():
         if f"/{table_name}" in url:
             offset = (params or {}).get("offset", 0)
             limit = (params or {}).get("limit", 1000)
-            rows = table_data[offset:offset + limit]
+            rows = table_data[offset : offset + limit]
             return _make_mock_response(rows)
 
     return _make_mock_response([], status_code=404)
@@ -225,8 +226,11 @@ def _execute_aggregate(df, query):
     func, agg_col, alias = agg_match.group(1).upper(), agg_match.group(2), agg_match.group(3)
 
     pandas_func = {
-        "SUM": "sum", "AVG": "mean", "COUNT": "count",
-        "MIN": "min", "MAX": "max",
+        "SUM": "sum",
+        "AVG": "mean",
+        "COUNT": "count",
+        "MIN": "min",
+        "MAX": "max",
     }[func]
 
     result = df.groupby(group_col)[agg_col].agg(pandas_func).reset_index()
@@ -247,6 +251,7 @@ def _execute_aggregate(df, query):
 def _extract_limit(query):
     """Extract LIMIT value from SQL query."""
     import re
+
     match = re.search(r"LIMIT\s+(\d+)", query, re.IGNORECASE)
     return int(match.group(1)) if match else None
 
@@ -254,6 +259,7 @@ def _extract_limit(query):
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def mock_warp_session():
@@ -271,11 +277,14 @@ def mock_warp_session():
 def e2e_engine(mock_warp_session):
     """Full stack: real WarpConnector → OLAPEngine (lazy, no data loaded yet)."""
     engine = OLAPEngine(database=":memory:", threads=2, memory_limit="1GB")
-    engine.connect_source("ecommerce", {
-        "type": "warp",
-        "base_url": "http://localhost:8080",
-        "database": "ecommerce",
-    })
+    engine.connect_source(
+        "ecommerce",
+        {
+            "type": "warp",
+            "base_url": "http://localhost:8080",
+            "database": "ecommerce",
+        },
+    )
     yield engine
     engine.close()
 
@@ -290,6 +299,7 @@ def e2e_executor(e2e_engine):
 def e2e_rest_client(e2e_engine, e2e_executor):
     """FastAPI TestClient wired to full-stack engine."""
     from fastapi.testclient import TestClient
+
     from fusion.tools.rest_server import create_app
 
     app = create_app(engine=e2e_engine, executor=e2e_executor)
@@ -299,6 +309,7 @@ def e2e_rest_client(e2e_engine, e2e_executor):
 # ===========================================================================
 # E2E TEST SCENARIOS
 # ===========================================================================
+
 
 class TestE2EConnection:
     """Scenario: User connects to Warp and discovers schema."""
@@ -350,8 +361,7 @@ class TestE2ELazyLoading:
         # Now it should show as loaded
         sources = e2e_executor.list_sources()
         products = next(
-            t for t in sources["sources"][0]["tables"]
-            if t["name"] == "ecommerce.products"
+            t for t in sources["sources"][0]["tables"] if t["name"] == "ecommerce.products"
         )
         assert products["loaded"] is True
 
@@ -365,9 +375,7 @@ class TestE2EQueryData:
     """Scenario: User runs analytical SQL queries."""
 
     def test_simple_select(self, e2e_executor):
-        result = e2e_executor.query_data(
-            "SELECT * FROM ecommerce.users ORDER BY id"
-        )
+        result = e2e_executor.query_data("SELECT * FROM ecommerce.users ORDER BY id")
         assert result["row_count"] == 5
         assert result["rows"][0]["name"] == "Alice"
 
@@ -409,9 +417,9 @@ class TestE2EQueryData:
         assert "error" in result
 
     def test_sql_injection_blocked(self, e2e_executor):
-        result = e2e_executor.execute("query_data", {
-            "sql": "SELECT * FROM ecommerce.users; DROP TABLE ecommerce.users"
-        })
+        result = e2e_executor.execute(
+            "query_data", {"sql": "SELECT * FROM ecommerce.users; DROP TABLE ecommerce.users"}
+        )
         assert "error" in result
 
 
@@ -434,9 +442,7 @@ class TestE2ESearchData:
         assert result["row_count"] == 0
 
     def test_search_with_limit(self, e2e_executor):
-        result = e2e_executor.search_data(
-            "ecommerce.orders", "status", "completed", limit=2
-        )
+        result = e2e_executor.search_data("ecommerce.orders", "status", "completed", limit=2)
         assert len(result["rows"]) <= 2
 
 
@@ -444,25 +450,19 @@ class TestE2EAggregateData:
     """Scenario: User runs GROUP BY aggregations via tool."""
 
     def test_aggregate_sum(self, e2e_executor):
-        result = e2e_executor.aggregate_data(
-            "ecommerce.orders", "product", "amount", "SUM"
-        )
+        result = e2e_executor.aggregate_data("ecommerce.orders", "product", "amount", "SUM")
         assert result["row_count"] > 0
         products = [r["product"] for r in result["rows"]]
         assert "Monitor" in products
 
     def test_aggregate_count(self, e2e_executor):
-        result = e2e_executor.aggregate_data(
-            "ecommerce.orders", "status", "id", "COUNT"
-        )
+        result = e2e_executor.aggregate_data("ecommerce.orders", "status", "id", "COUNT")
         assert result["row_count"] > 0
         statuses = [r["status"] for r in result["rows"]]
         assert "completed" in statuses
 
     def test_aggregate_invalid_func_blocked(self, e2e_executor):
-        result = e2e_executor.aggregate_data(
-            "ecommerce.orders", "product", "amount", "EVIL"
-        )
+        result = e2e_executor.aggregate_data("ecommerce.orders", "product", "amount", "EVIL")
         assert "error" in result
 
 
@@ -485,9 +485,7 @@ class TestE2EMaterializedViews:
         assert result["table_name"] == "mv_product_totals"
 
         # Query the materialized view
-        result = e2e_executor.query_data(
-            "SELECT * FROM mv_product_totals ORDER BY total DESC"
-        )
+        result = e2e_executor.query_data("SELECT * FROM mv_product_totals ORDER BY total DESC")
         assert result["row_count"] > 0
 
     def test_list_views(self, e2e_executor):
@@ -543,8 +541,7 @@ class TestE2EPushdown:
 
         # Verify POST was called (pushdown route)
         post_calls = [
-            call for call in mock_warp_session.post.call_args_list
-            if "query/execute" in str(call)
+            call for call in mock_warp_session.post.call_args_list if "query/execute" in str(call)
         ]
         assert len(post_calls) > 0, "Expected pushdown POST call to /query/execute"
 
@@ -558,8 +555,7 @@ class TestE2EPushdown:
 
         # No POST calls (no pushdown) — data was in DuckDB
         pushdown_calls = [
-            call for call in mock_warp_session.post.call_args_list
-            if "query/execute" in str(call)
+            call for call in mock_warp_session.post.call_args_list if "query/execute" in str(call)
         ]
         assert len(pushdown_calls) == 0
 
@@ -590,29 +586,35 @@ class TestE2ERESTAPI:
         assert "name" in col_names
 
     def test_query_via_rest(self, e2e_rest_client):
-        resp = e2e_rest_client.post("/query", json={
-            "sql": "SELECT * FROM ecommerce.users ORDER BY id LIMIT 5"
-        })
+        resp = e2e_rest_client.post(
+            "/query", json={"sql": "SELECT * FROM ecommerce.users ORDER BY id LIMIT 5"}
+        )
         assert resp.status_code == 200
         data = resp.json()
         assert data["row_count"] == 5
 
     def test_search_via_rest(self, e2e_rest_client):
-        resp = e2e_rest_client.post("/search", json={
-            "table": "ecommerce.users",
-            "filter_column": "name",
-            "filter_value": "Bob",
-        })
+        resp = e2e_rest_client.post(
+            "/search",
+            json={
+                "table": "ecommerce.users",
+                "filter_column": "name",
+                "filter_value": "Bob",
+            },
+        )
         assert resp.status_code == 200
         assert resp.json()["row_count"] == 1
 
     def test_aggregate_via_rest(self, e2e_rest_client):
-        resp = e2e_rest_client.post("/aggregate", json={
-            "table": "ecommerce.orders",
-            "group_by": "product",
-            "agg_column": "amount",
-            "agg_func": "SUM",
-        })
+        resp = e2e_rest_client.post(
+            "/aggregate",
+            json={
+                "table": "ecommerce.orders",
+                "group_by": "product",
+                "agg_column": "amount",
+                "agg_func": "SUM",
+            },
+        )
         assert resp.status_code == 200
         assert resp.json()["row_count"] > 0
 
@@ -621,29 +623,33 @@ class TestE2ERESTAPI:
         assert resp.status_code == 200
 
     def test_guardrail_403(self, e2e_rest_client):
-        resp = e2e_rest_client.post("/query", json={
-            "sql": "DROP TABLE ecommerce.users"
-        })
+        resp = e2e_rest_client.post("/query", json={"sql": "DROP TABLE ecommerce.users"})
         assert resp.status_code == 403
 
     def test_create_view_via_rest(self, e2e_rest_client):
         # Load table first (MV creation uses execute_raw)
         e2e_rest_client.post("/tables/ecommerce.orders/load")
 
-        resp = e2e_rest_client.post("/views", json={
-            "name": "rest_test_view",
-            "sql": "SELECT product, COUNT(*) as cnt FROM ecommerce.orders GROUP BY product",
-        })
+        resp = e2e_rest_client.post(
+            "/views",
+            json={
+                "name": "rest_test_view",
+                "sql": "SELECT product, COUNT(*) as cnt FROM ecommerce.orders GROUP BY product",
+            },
+        )
         assert resp.status_code == 200
         assert resp.json()["status"] == "created"
 
     def test_views_list_via_rest(self, e2e_rest_client):
         # Load table first, then create a view
         e2e_rest_client.post("/tables/ecommerce.users/load")
-        e2e_rest_client.post("/views", json={
-            "name": "rest_list_view",
-            "sql": "SELECT COUNT(*) as cnt FROM ecommerce.users",
-        })
+        e2e_rest_client.post(
+            "/views",
+            json={
+                "name": "rest_list_view",
+                "sql": "SELECT COUNT(*) as cnt FROM ecommerce.users",
+            },
+        )
         resp = e2e_rest_client.get("/views")
         assert resp.status_code == 200
         assert len(resp.json()["views"]) >= 1
@@ -685,9 +691,7 @@ class TestE2EMultiTableWorkflow:
         e2e_executor.load_table("ecommerce.orders")
 
         # Step 5: Aggregate analysis
-        agg = e2e_executor.aggregate_data(
-            "ecommerce.orders", "product", "amount", "SUM"
-        )
+        agg = e2e_executor.aggregate_data("ecommerce.orders", "product", "amount", "SUM")
         assert agg["row_count"] > 0
 
         # Step 6: Create materialized view for repeated use

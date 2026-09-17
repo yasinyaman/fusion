@@ -33,7 +33,7 @@ def _get_executor():
 
 def _create_mcp_app():
     """Create the FastMCP application with all tool handlers."""
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.mcpserver import MCPServer as FastMCP  # mcp 2.x renamed FastMCP
 
     mcp = FastMCP("fusion")
 
@@ -44,7 +44,10 @@ def _create_mcp_app():
 
     @mcp.tool()
     def describe_table(table: str) -> str:
-        """Show detailed schema for a table (columns, types, row count). Use 'source.table' format."""
+        """Show detailed schema for a table (columns, types, row count).
+
+        Use 'source.table' format.
+        """
         return json.dumps(_get_executor().describe_table(table), default=str)
 
     @mcp.tool()
@@ -54,7 +57,10 @@ def _create_mcp_app():
 
     @mcp.tool()
     def search_data(table: str, filter_column: str, filter_value: str, limit: int = 20) -> str:
-        """Search rows in a table matching a filter. Supports exact match or LIKE with % wildcards."""
+        """Search rows in a table matching a filter.
+
+        Supports exact match or LIKE with % wildcards.
+        """
         return json.dumps(
             _get_executor().search_data(table, filter_column, filter_value, limit),
             default=str,
@@ -175,21 +181,29 @@ def main():
             )
             databases = [args.database]
         for db_name in databases:
-            _engine.connect_source(db_name, {
-                "type": "warp",
-                "base_url": args.warp_url,
-                "database": db_name,
-            })
+            _engine.connect_source(
+                db_name,
+                {
+                    "type": "warp",
+                    "base_url": args.warp_url,
+                    "database": db_name,
+                },
+            )
         logger.info(
             "Auto-discovered %d databases from %s: %s",
-            len(databases), args.warp_url, databases,
+            len(databases),
+            args.warp_url,
+            databases,
         )
     else:
-        _engine.connect_source(args.database, {
-            "type": "warp",
-            "base_url": args.warp_url,
-            "database": args.database,
-        })
+        _engine.connect_source(
+            args.database,
+            {
+                "type": "warp",
+                "base_url": args.warp_url,
+                "database": args.database,
+            },
+        )
 
     # Connect additional sources (--source name=X,url=Y,db=Z)
     for source_str in args.source:
@@ -198,17 +212,22 @@ def main():
         src_url = parts.get("url", "")
         src_db = parts.get("db", src_name)
         if src_name and src_url:
-            _engine.connect_source(src_name, {
-                "type": "warp",
-                "base_url": src_url,
-                "database": src_db,
-            })
+            _engine.connect_source(
+                src_name,
+                {
+                    "type": "warp",
+                    "base_url": src_url,
+                    "database": src_db,
+                },
+            )
 
     _executor = ToolExecutor(_engine)
 
     logger.info(
         "Starting Fusion MCP server (warp=%s, db=%s, extra_sources=%d)",
-        args.warp_url, args.database, len(args.source),
+        args.warp_url,
+        args.database,
+        len(args.source),
     )
 
     mcp = _create_mcp_app()
