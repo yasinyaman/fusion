@@ -88,11 +88,60 @@ class TestWarpSourceContract:
             source.execute_query("SELECT 1")
 
     @responses.activate
-    def test_bearer_auth_header_sent(self):
+    def test_api_key_header_sent(self):
         _stub_connect(())
         source = _make_source(api_key="s3cr3t")
         source.connect()
-        assert responses.calls[0].request.headers["Authorization"] == "Bearer s3cr3t"
+        headers = responses.calls[0].request.headers
+        assert headers["X-API-Key"] == "s3cr3t"
+        assert "Authorization" not in headers
+
+    @responses.activate
+    def test_custom_api_key_header(self):
+        _stub_connect(())
+        source = _make_source(api_key="s3cr3t", api_key_header="X-Warp-Key")
+        source.connect()
+        assert responses.calls[0].request.headers["X-Warp-Key"] == "s3cr3t"
+
+    @responses.activate
+    def test_raw_query_403_disables_pushdown_without_tripping_breaker(self):
+        _stub_connect(("t",))
+        responses.add(
+            responses.POST,
+            f"{BASE}/api/v1/mydb/query/execute",
+            json={"detail": "Raw query is disabled"},
+            status=403,
+        )
+        source = _make_source(circuit_breaker_threshold=1)
+        source.connect()
+        assert source.supports_pushdown is True
+        with pytest.raises(QueryError):
+            source.execute_query("SELECT 1")
+        assert source.supports_pushdown is False
+        # A 4xx never opens the breaker: the very next table fetch goes through.
+        responses.add(responses.GET, f"{BASE}/api/v1/mydb/t", json={"data": [{"id": 1}]})
+        assert len(source.fetch_table("t")) == 1
+
+    @responses.activate
+    def test_legacy_single_db_layout_is_probed(self):
+        responses.add(responses.GET, f"{BASE}/health", json={"status": "ok"}, status=200)
+        responses.add(
+            responses.GET,
+            f"{BASE}/info",
+            json={
+                "version": "0.9.0",
+                "databases": {"mydb": {"tables": ["t"]}},
+                "settings": {"api_prefix": "/api/v1", "raw_query_enabled": False},
+            },
+        )
+        responses.add(responses.GET, f"{BASE}/api/v1/mydb/t", json={"detail": "nf"}, status=404)
+        responses.add(responses.GET, f"{BASE}/api/v1/t", json={"data": [{"id": 7}]})
+        source = _make_source()
+        source.connect()
+        assert source.warp_capabilities.legacy
+        assert source.supports_pushdown is False
+        assert source.fetch_table("t").column("id") == [7]
+        assert responses.calls[-1].request.url.startswith(f"{BASE}/api/v1/t?")
 
     @responses.activate
     def test_discover_schema_infers_types(self):

@@ -18,6 +18,8 @@ from fusion.domain.errors import ConnectionError
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 30.0
+DEFAULT_API_PREFIX = "/api/v1"
+DEFAULT_API_KEY_HEADER = "X-API-Key"
 
 # Cloud metadata hostnames that must never be contacted (SSRF targets).
 _BLOCKED_HOSTNAMES = frozenset({"metadata.google.internal", "metadata.goog"})
@@ -29,6 +31,19 @@ class HttpTransportError(ConnectionError):
     def __init__(self, message: str, status: int | None = None) -> None:
         super().__init__(message)
         self.status = status
+
+
+def is_transport_failure(exc: BaseException) -> bool:
+    """Whether an exception should count against the circuit breaker.
+
+    A 4xx answer proves Warp is up and talking (a bad table name, a refused
+    raw query, ...); only network errors, 5xx, 408 (timeout) and 429
+    (overload) indicate the service itself is struggling.
+    """
+    if isinstance(exc, HttpTransportError) and exc.status is not None:
+        status = exc.status
+        return not (400 <= status < 500 and status not in (408, 429))
+    return True
 
 
 def _is_blocked_ip(host: str) -> bool:
@@ -121,7 +136,13 @@ class PooledHttpTransport:
 
 
 class WarpHttpClient:
-    """Typed access to the Warp endpoints Fusion uses."""
+    """Typed access to the Warp endpoints Fusion uses.
+
+    URL layout: ``{base_url}{api_prefix}/{database}/{table}`` (Warp >= 0.10
+    always, and multi-database Warp 0.9). A single-database Warp 0.9 serves
+    ``{api_prefix}/{table}`` only; ``configure(db_prefixed=False)`` switches
+    to that layout once the source has probed it.
+    """
 
     def __init__(
         self,
@@ -129,12 +150,32 @@ class WarpHttpClient:
         database: str,
         transport: HttpTransport,
         timeout: float = DEFAULT_TIMEOUT,
+        api_prefix: str = DEFAULT_API_PREFIX,
+        db_prefixed: bool = True,
     ) -> None:
         validate_base_url(base_url)
         self.base_url = base_url.rstrip("/")
         self.database = database
         self.timeout = timeout
         self._transport = transport
+        self.api_prefix = _normalize_prefix(api_prefix)
+        self.db_prefixed = db_prefixed
+
+    def configure(self, api_prefix: str | None = None, db_prefixed: bool | None = None) -> None:
+        """Adopt the layout a running Warp reports (``/info``) or a probe found."""
+        if api_prefix is not None:
+            self.api_prefix = _normalize_prefix(api_prefix)
+        if db_prefixed is not None:
+            self.db_prefixed = db_prefixed
+
+    @property
+    def api_root(self) -> str:
+        """``{base_url}{api_prefix}[/{database}]``: the root of every table URL."""
+        root = f"{self.base_url}{self.api_prefix}"
+        return f"{root}/{self.database}" if self.db_prefixed else root
+
+    def table_url(self, table: str) -> str:
+        return f"{self.api_root}/{table}"
 
     def health(self) -> Any:
         return self._transport.get_json(f"{self.base_url}/health", timeout=self.timeout)
@@ -144,23 +185,27 @@ class WarpHttpClient:
 
     def table_page(self, table: str, limit: int, offset: int = 0) -> Any:
         return self._transport.get_json(
-            f"{self.base_url}/api/v1/{self.database}/{table}",
+            self.table_url(table),
             params={"limit": limit, "offset": offset},
             timeout=self.timeout,
         )
 
-    def query(self, sql: str, params: list[Any] | None = None) -> Any:
+    def query(self, sql: str, params: Mapping[str, Any] | None = None) -> Any:
+        """``POST .../query/execute``; ``params`` are Warp's named ``:name`` parameters."""
         payload: dict[str, Any] = {"query": sql}
         if params:
-            payload["params"] = params
+            payload["params"] = dict(params)
         return self._transport.post_json(
-            f"{self.base_url}/api/v1/{self.database}/query/execute",
-            payload,
-            timeout=self.timeout,
+            f"{self.api_root}/query/execute", payload, timeout=self.timeout
         )
 
     def close(self) -> None:
         self._transport.close()
+
+
+def _normalize_prefix(prefix: str) -> str:
+    stripped = prefix.strip().strip("/")
+    return f"/{stripped}" if stripped else ""
 
 
 def build_transport(
@@ -173,8 +218,13 @@ def build_transport(
     circuit_breaker_threshold: int = 5,
     circuit_breaker_timeout: float = 60.0,
     breaker_name: str = "warp",
+    api_key_header: str = DEFAULT_API_KEY_HEADER,
 ) -> PooledHttpTransport:
-    """Production transport: pooled session with retries behind a circuit breaker."""
+    """Production transport: pooled session with retries behind a circuit breaker.
+
+    The breaker counts only network errors, 5xx, 408 and 429 (see
+    ``is_transport_failure``): a Warp answering 4xx is healthy.
+    """
     pool = ConnectionPool(
         pool_size=pool_size,
         max_overflow=pool_max_overflow,
@@ -182,8 +232,12 @@ def build_transport(
         backoff_factor=backoff_factor,
         timeout=timeout,
         api_key=api_key,
+        api_key_header=api_key_header,
     )
     breaker = CircuitBreaker(
-        breaker_name, failure_threshold=circuit_breaker_threshold, timeout=circuit_breaker_timeout
+        breaker_name,
+        failure_threshold=circuit_breaker_threshold,
+        timeout=circuit_breaker_timeout,
+        is_failure=is_transport_failure,
     )
     return PooledHttpTransport(pool, breaker)

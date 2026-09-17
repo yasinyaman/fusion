@@ -14,12 +14,20 @@ class TestConnectionPool:
             assert pool.max_retries == 1
             assert pool.timeout == 5
             assert pool.session.max_redirects == 0
-            assert pool.session.headers["Authorization"] == "Bearer k"
+            # Warp reads X-API-Key (auth.header_name), never a bearer token.
+            assert pool.session.headers["X-API-Key"] == "k"
+            assert "Authorization" not in pool.session.headers
             assert pool.session.headers["Accept"] == "application/json"
+
+    def test_custom_api_key_header(self):
+        with ConnectionPool(api_key="k", api_key_header="X-Warp-Token") as pool:
+            assert pool.session.headers["X-Warp-Token"] == "k"
+            assert "X-API-Key" not in pool.session.headers
 
     def test_no_auth_header_without_key(self):
         with ConnectionPool() as pool:
             assert "Authorization" not in pool.session.headers
+            assert "X-API-Key" not in pool.session.headers
 
     @responses.activate
     def test_get_and_post_success(self):

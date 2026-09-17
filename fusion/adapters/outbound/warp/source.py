@@ -6,9 +6,12 @@ import logging
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from fusion.adapters.outbound.warp.capabilities import WarpCapabilities, from_info
 from fusion.adapters.outbound.warp.http import (
+    DEFAULT_API_KEY_HEADER,
     DEFAULT_TIMEOUT,
     HttpTransport,
+    HttpTransportError,
     WarpHttpClient,
     build_transport,
 )
@@ -25,8 +28,12 @@ class WarpSource:
     """Config keys (via ``from_config``):
 
     type: "warp" · base_url · database (defaults to the source name) · api_key ·
-    timeout · page_size · max_retries · backoff_factor · pool_size ·
-    pool_max_overflow · circuit_breaker_threshold · circuit_breaker_timeout
+    api_key_header · timeout · page_size · max_retries · backoff_factor ·
+    pool_size · pool_max_overflow · circuit_breaker_threshold ·
+    circuit_breaker_timeout
+
+    ``connect`` reads ``/info`` to learn what the Warp can do (see
+    ``WarpCapabilities``) and adapts: URL layout, pushdown availability.
     """
 
     source_type = "warp"
@@ -42,6 +49,9 @@ class WarpSource:
         self._page_size = page_size
         self._tables: list[str] = []
         self._connected = False
+        self._caps = WarpCapabilities()
+        self._raw_query_denied = False
+        self._layout_fallback_tried = False
 
     @classmethod
     def from_config(cls, name: str, config: Mapping[str, Any]) -> WarpSource:
@@ -52,6 +62,7 @@ class WarpSource:
         if transport is None:
             transport = build_transport(
                 api_key=config.get("api_key"),
+                api_key_header=str(config.get("api_key_header") or DEFAULT_API_KEY_HEADER),
                 timeout=timeout,
                 max_retries=int(config.get("max_retries", 3)),
                 backoff_factor=float(config.get("backoff_factor", 2.0)),
@@ -82,6 +93,11 @@ class WarpSource:
     def base_url(self) -> str:
         return self._client.base_url
 
+    @property
+    def warp_capabilities(self) -> WarpCapabilities:
+        """What the connected Warp reported (defaults before ``connect``)."""
+        return self._caps
+
     def connect(self) -> None:
         try:
             self._client.health()
@@ -92,13 +108,48 @@ class WarpSource:
         except ConnectionError as e:
             raise ConnectionError(f"Failed to discover tables from Warp: {e}") from e
         self._tables = extract_tables(info, self._client.database)
+        self._caps = from_info(info)
+        self._client.configure(api_prefix=self._caps.api_prefix, db_prefixed=True)
         self._connected = True
         logger.info(
-            "Connected to Warp at %s (database=%s, tables=%d)",
+            "Connected to Warp %s at %s (db=%s, tables=%d, schema=%s, export=%s, raw_query=%s)",
+            self._caps.version or "(unknown version)",
             self._client.base_url,
             self._client.database,
             len(self._tables),
+            self._caps.schema,
+            ",".join(self._caps.export_formats) or "no",
+            self._caps.raw_query,
         )
+
+    def _table_page(self, table: str, limit: int, offset: int = 0) -> Any:
+        """One page of ``table``, retrying once with the pre-0.10 URL layout.
+
+        Warp < 0.10 mounted a *single* database without the ``/{db}`` segment,
+        so the db-scoped URL 404s there. The fallback is tried once per source
+        and only for a Warp that did not advertise its layout.
+        """
+        try:
+            return self._client.table_page(table, limit=limit, offset=offset)
+        except HttpTransportError as e:
+            if e.status != 404 or self._layout_fallback_tried or not self._caps.legacy:
+                raise
+            if not self._client.db_prefixed:
+                raise
+        self._layout_fallback_tried = True
+        self._client.configure(db_prefixed=False)
+        try:
+            page = self._client.table_page(table, limit=limit, offset=offset)
+        except ConnectionError:
+            # Not a layout problem (the table is simply unknown): put it back.
+            self._client.configure(db_prefixed=True)
+            raise
+        logger.info(
+            "Warp at %s serves un-prefixed table routes (single database, pre-0.10); using %s",
+            self._client.base_url,
+            self._client.api_root,
+        )
+        return page
 
     def close(self) -> None:
         self._client.close()
@@ -110,7 +161,7 @@ class WarpSource:
         schema: SourceSchema = {}
         for table in self._tables:
             try:
-                data = self._client.table_page(table, limit=SCHEMA_SAMPLE_ROWS)
+                data = self._table_page(table, limit=SCHEMA_SAMPLE_ROWS)
                 rows = RowSet.from_records(extract_rows(data))
                 schema[table] = TableSchema(
                     columns=infer_columns(rows),
@@ -130,7 +181,7 @@ class WarpSource:
             if max_rows is not None:
                 page_size = min(page_size, max_rows - len(records))
             try:
-                data = self._client.table_page(table, limit=page_size, offset=offset)
+                data = self._table_page(table, limit=page_size, offset=offset)
             except ConnectionError as e:
                 raise QueryError(f"Failed to fetch data from {table}: {e}") from e
             rows = extract_rows(data)
@@ -149,7 +200,8 @@ class WarpSource:
 
     @property
     def supports_pushdown(self) -> bool:
-        return True
+        """Raw SQL is available unless Warp said otherwise, or refused one (403)."""
+        return self._caps.raw_query and not self._raw_query_denied
 
     # -- PushdownCapable ----------------------------------------------------
 
@@ -157,6 +209,17 @@ class WarpSource:
         self._require_connected()
         try:
             data = self._client.query(sql)
+        except HttpTransportError as e:
+            if e.status == 403:
+                # Raw query is disabled on this Warp (default, and forced in
+                # production); stop trying so the breaker and the logs stay quiet.
+                self._raw_query_denied = True
+                logger.warning(
+                    "Warp at %s refuses raw queries (HTTP 403); pushdown disabled for '%s'",
+                    self._client.base_url,
+                    self.name,
+                )
+            raise QueryError(f"Warp query execution failed: {e}") from e
         except ConnectionError as e:
             raise QueryError(f"Warp query execution failed: {e}") from e
         return RowSet.from_records(extract_rows(data))

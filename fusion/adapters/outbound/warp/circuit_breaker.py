@@ -21,9 +21,20 @@ class CircuitState(Enum):
 
 
 class CircuitBreaker:
-    """Opens after ``failure_threshold`` consecutive failures; retries after ``timeout``."""
+    """Opens after ``failure_threshold`` consecutive failures; retries after ``timeout``.
 
-    def __init__(self, name: str, failure_threshold: int = 5, timeout: float = 60.0) -> None:
+    ``is_failure`` decides which exceptions count: by default every one does.
+    An exception it rejects (e.g. an HTTP 4xx, which proves the service is
+    up) is re-raised without touching the failure count.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        failure_threshold: int = 5,
+        timeout: float = 60.0,
+        is_failure: Callable[[BaseException], bool] | None = None,
+    ) -> None:
         if failure_threshold < 1:
             raise ValueError("failure_threshold must be >= 1")
         if timeout <= 0:
@@ -31,6 +42,7 @@ class CircuitBreaker:
         self.name = name
         self.failure_threshold = failure_threshold
         self.timeout = timeout
+        self.is_failure = is_failure
         self.state = CircuitState.CLOSED
         self.failure_count = 0
         self.last_failure_time: float | None = None
@@ -50,8 +62,9 @@ class CircuitBreaker:
                     )
         try:
             result = func(*args, **kwargs)
-        except Exception:
-            self._on_failure()
+        except Exception as e:
+            if self.is_failure is None or self.is_failure(e):
+                self._on_failure()
             raise
         self._on_success()
         return result

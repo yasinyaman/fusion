@@ -133,8 +133,19 @@ def run_mock_sql(query: str, db: Mapping[str, list[dict[str, Any]]]) -> list[dic
 # ---------------------------------------------------------------------------
 
 
+FILTER_OPS = ["eq", "gt", "gte", "in", "is_null", "like", "lt", "lte", "ne"]
+
+
 class FakeWarpTransport:
-    """HttpTransport that answers like a Warp server holding ``db``."""
+    """HttpTransport that answers like a Warp server holding ``db``.
+
+    ``mode="0.10"`` (default) advertises the 0.10 ``capabilities`` block;
+    ``mode="legacy"`` behaves like Warp 0.9 (no capabilities). ``raw_query``
+    is what ``/info`` reports; ``deny_raw_query`` makes ``/query/execute``
+    answer 403 regardless (a production Warp). ``single_db_unprefixed``
+    reproduces a legacy single-database Warp that serves ``/api/v1/{table}``
+    and 404s the ``/api/v1/{db}/{table}`` form.
+    """
 
     def __init__(
         self,
@@ -144,15 +155,60 @@ class FakeWarpTransport:
         health_ok: bool = True,
         info: Any | None = None,
         page_format: str = "list",
+        mode: str = "0.10",
+        raw_query: bool = True,
+        deny_raw_query: bool = False,
+        single_db_unprefixed: bool = False,
+        api_prefix: str = "/api/v1",
+        export_max_rows: int = 0,
+        arrow: bool = True,
     ) -> None:
         self.db = {k: list(v) for k, v in db.items()}
         self.database = database
         self.health_ok = health_ok
         self.info_override = info
         self.page_format = page_format
+        self.mode = mode
+        self.raw_query = raw_query
+        self.deny_raw_query = deny_raw_query
+        self.single_db_unprefixed = single_db_unprefixed
+        self.api_prefix = api_prefix
+        self.export_max_rows = export_max_rows
+        self.arrow = arrow
         self.requests: list[tuple[str, str, dict[str, Any]]] = []
         self.failures: list[HttpTransportError] = []
         self.closed = False
+
+    # -- /info --------------------------------------------------------------
+
+    def info_payload(self) -> dict[str, Any]:
+        legacy = self.mode == "legacy"
+        payload: dict[str, Any] = {
+            "name": "Warp Engine",
+            "version": "0.9.0" if legacy else "0.10.0",
+            "databases": {self.database: {"tables": list(self.db), "table_count": len(self.db)}},
+            "settings": {"api_prefix": self.api_prefix, "raw_query_enabled": self.raw_query},
+        }
+        if not legacy:
+            payload["capabilities"] = {
+                "api_prefix": self.api_prefix,
+                "db_prefix": "always",
+                "schema": True,
+                "export": {
+                    "enabled": True,
+                    "formats": ["json", "ndjson"] + (["arrow"] if self.arrow else []),
+                    "max_rows": self.export_max_rows,
+                    "batch_size": 5000,
+                },
+                "raw_query": self.raw_query,
+                "filter_ops": FILTER_OPS,
+            }
+        return payload
+
+    def _check_layout(self, url: str) -> None:
+        """404 the db-prefixed form when emulating a legacy single-DB Warp."""
+        if self.single_db_unprefixed and f"{self.api_prefix}/{self.database}/" in url:
+            raise HttpTransportError(f"HTTP 404 from {url}", status=404)
 
     # -- helpers ------------------------------------------------------------
 
@@ -180,9 +236,8 @@ class FakeWarpTransport:
         if url.endswith("/info"):
             if self.info_override is not None:
                 return self.info_override
-            return {
-                "databases": {self.database: {"tables": list(self.db), "table_count": len(self.db)}}
-            }
+            return self.info_payload()
+        self._check_layout(url)
         table = url.rstrip("/").rsplit("/", 1)[-1]
         if table in self.db:
             offset = int((params or {}).get("offset", 0))
@@ -198,6 +253,9 @@ class FakeWarpTransport:
         self._maybe_fail()
         if "/query/execute" not in url:
             raise HttpTransportError(f"HTTP 404 from {url}", status=404)
+        self._check_layout(url)
+        if self.deny_raw_query or not self.raw_query:
+            raise HttpTransportError(f"HTTP 403 from {url}: raw query disabled", status=403)
         try:
             return {"data": run_mock_sql(str(payload.get("query", "")), self.db)}
         except ValueError as e:

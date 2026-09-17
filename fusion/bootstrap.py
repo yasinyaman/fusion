@@ -106,8 +106,15 @@ def build_app(
     )
 
 
-def default_discovery() -> DatabaseDiscovery:
-    """The Warp database-discovery adapter (used by the CLIs for --auto-discover)."""
+def default_discovery(settings: Settings | None = None) -> DatabaseDiscovery:
+    """The Warp database-discovery adapter (used by the CLIs for --auto-discover).
+
+    With ``settings`` the Warp API key and header are applied to the probe.
+    """
     from fusion.adapters.outbound.warp.discovery import WarpDiscovery
 
-    return WarpDiscovery()
+    if settings is None:
+        return WarpDiscovery()
+    return WarpDiscovery(
+        api_key=settings.warp_api_key or None, api_key_header=settings.warp_api_key_header
+    )

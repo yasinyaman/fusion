@@ -56,14 +56,46 @@ def e2e_transport():
     return FakeWarpTransport(MOCK_DB, database="ecommerce")
 
 
-@pytest.fixture
-def e2e_app(settings, scheduler, e2e_transport):
-    """Full stack: FakeWarpTransport -> WarpSource -> FusionApp (lazy, nothing loaded)."""
-
+def _e2e_app(settings, scheduler, transport):
     def factory(name, config):
-        return WarpSource.from_config(name, {**config, "transport": e2e_transport})
+        return WarpSource.from_config(name, {**config, "transport": transport})
 
     a = build_app(settings, scheduler=scheduler, source_factory=factory)
     a.sources.connect("ecommerce", {"type": "warp", "base_url": WARP_URL, "database": "ecommerce"})
+    return a
+
+
+@pytest.fixture
+def e2e_app(settings, scheduler, e2e_transport):
+    """Full stack: FakeWarpTransport -> WarpSource -> FusionApp (lazy, nothing loaded)."""
+    a = _e2e_app(settings, scheduler, e2e_transport)
+    yield a
+    a.close()
+
+
+@pytest.fixture
+def denying_transport():
+    """A Warp 0.10 whose ``/query/execute`` answers 403 (raw query off)."""
+    return FakeWarpTransport(MOCK_DB, database="ecommerce", deny_raw_query=True)
+
+
+@pytest.fixture
+def denying_app(settings, scheduler, denying_transport):
+    a = _e2e_app(settings, scheduler, denying_transport)
+    yield a
+    a.close()
+
+
+@pytest.fixture
+def legacy_transport():
+    """A Warp 0.9: no capabilities, raw query off, single DB served un-prefixed."""
+    return FakeWarpTransport(
+        MOCK_DB, database="ecommerce", mode="legacy", raw_query=False, single_db_unprefixed=True
+    )
+
+
+@pytest.fixture
+def legacy_app(settings, scheduler, legacy_transport):
+    a = _e2e_app(settings, scheduler, legacy_transport)
     yield a
     a.close()

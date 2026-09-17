@@ -165,6 +165,38 @@ class TestPushdown:
         assert e2e_app.catalog.is_loaded("ecommerce.orders")
 
 
+class TestLegacyWarp:
+    """Fusion keeps working against a Warp 0.9 (no schema/export, raw query off)."""
+
+    def test_queries_load_tables_without_pushdown(self, legacy_app, legacy_transport):
+        result = legacy_app.query.sql("SELECT COUNT(*) AS cnt FROM ecommerce.orders")
+        assert result.rows == [(8,)]
+        assert _pushdown_calls(legacy_transport) == []  # /info said raw_query_enabled=false
+        assert legacy_app.catalog.is_loaded("ecommerce.orders")
+        # The db-scoped URL 404s on a single-database Warp 0.9, so the source
+        # switched to the un-prefixed layout and stayed there.
+        legacy_transport.requests.clear()
+        legacy_app.query.sql("SELECT COUNT(*) AS cnt FROM ecommerce.products")
+        assert legacy_transport.urls("GET")
+        assert all("/ecommerce/" not in u for u in legacy_transport.urls("GET"))
+
+    def test_tools_work_end_to_end(self, legacy_app):
+        tools = legacy_app.tools
+        assert tools.search_data("ecommerce.users", "name", "Alice")["row_count"] == 1
+        agg = tools.aggregate_data("ecommerce.orders", "product", "amount", "SUM")
+        assert agg["rows"][0] == {"product": "Monitor", "sum_amount": 800.0}
+        assert tools.list_sources()["sources"][0]["source"] == "ecommerce"
+
+    def test_403_is_learned_once(self, denying_app, denying_transport):
+        # Warp advertises raw_query but refuses it at runtime (production).
+        assert denying_app.query.sql("SELECT COUNT(*) AS c FROM ecommerce.users").rows == [(5,)]
+        assert len(_pushdown_calls(denying_transport)) == 1  # the single 403
+        assert denying_app.query.sql("SELECT COUNT(*) AS c FROM ecommerce.orders").rows == [(8,)]
+        assert len(_pushdown_calls(denying_transport)) == 1  # never retried
+        source = denying_app.sources.source("ecommerce")
+        assert source is not None and source.supports_pushdown is False
+
+
 class TestRestApi:
     def test_health_and_tools(self, client):
         assert client.get("/health").json()["status"] == "healthy"

@@ -25,10 +25,14 @@ class TestFromEnv:
                 "FUSION_CORS_ORIGINS": "https://a.com, https://b.com",
                 "FUSION_LOG_LEVEL": "debug",
                 "WARP_TIMEOUT": "12.5",
+                "WARP_API_KEY": "warp-k",
+                "FUSION_WARP_API_KEY_HEADER": " X-Warp-Key ",
                 "FUSION_BACKUP_ENABLED": "true",
                 "FUSION_API_KEY": "k",
             }
         )
+        assert s.warp_api_key == "warp-k"
+        assert s.warp_api_key_header == "X-Warp-Key"
         assert s.is_production()
         assert s.port == 8080
         assert s.threads == 8
@@ -91,3 +95,10 @@ def test_warp_http_defaults():
     assert d["max_retries"] == 1
     assert d["pool_size"] == 2
     assert d["circuit_breaker_threshold"] == 9
+    assert d["api_key"] is None  # empty key -> no auth header
+    assert d["api_key_header"] == "X-API-Key"
+    assert Settings(warp_api_key="k").warp_http_defaults()["api_key"] == "k"
+    assert Settings.from_env({}).warp_api_key_header == "X-API-Key"
+    assert Settings.from_env({"FUSION_WARP_API_KEY_HEADER": "  "}).warp_api_key_header == (
+        "X-API-Key"
+    )

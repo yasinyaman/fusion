@@ -7,6 +7,7 @@ from typing import Any
 
 from fusion.adapters.outbound.warp.connection_pool import ConnectionPool
 from fusion.adapters.outbound.warp.http import (
+    DEFAULT_API_KEY_HEADER,
     DEFAULT_TIMEOUT,
     HttpTransport,
     PooledHttpTransport,
@@ -37,13 +38,16 @@ def discover_databases(
     api_key: str | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     transport: HttpTransport | None = None,
+    api_key_header: str = DEFAULT_API_KEY_HEADER,
 ) -> list[str]:
     """Database names from ``/info`` (empty when the payload has none)."""
     base_url = base_url.rstrip("/")
     validate_base_url(base_url)
     owned = transport is None
     if transport is None:
-        transport = PooledHttpTransport(ConnectionPool(api_key=api_key, timeout=timeout))
+        transport = PooledHttpTransport(
+            ConnectionPool(api_key=api_key, api_key_header=api_key_header, timeout=timeout)
+        )
     try:
         try:
             transport.get_json(f"{base_url}/health", timeout=timeout)
@@ -62,12 +66,29 @@ def discover_databases(
 
 
 class WarpDiscovery:
-    """DatabaseDiscovery port implementation."""
+    """DatabaseDiscovery port implementation.
 
-    def __init__(self, transport: HttpTransport | None = None) -> None:
+    ``api_key`` / ``api_key_header`` given here are the defaults used when a
+    call does not pass its own key (the CLIs build one from ``Settings``).
+    """
+
+    def __init__(
+        self,
+        transport: HttpTransport | None = None,
+        api_key: str | None = None,
+        api_key_header: str = DEFAULT_API_KEY_HEADER,
+    ) -> None:
         self._transport = transport
+        self._api_key = api_key
+        self._api_key_header = api_key_header
 
     def discover_databases(
         self, base_url: str, api_key: str | None = None, timeout: float = DEFAULT_TIMEOUT
     ) -> list[str]:
-        return discover_databases(base_url, api_key, timeout, transport=self._transport)
+        return discover_databases(
+            base_url,
+            api_key if api_key is not None else self._api_key,
+            timeout,
+            transport=self._transport,
+            api_key_header=self._api_key_header,
+        )

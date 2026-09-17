@@ -37,6 +37,10 @@ class Settings:
 
     # Warp gateway
     warp_url: str = "http://localhost:8000"
+    # Sent on every Warp request in ``warp_api_key_header`` (Warp's
+    # ``auth.header_name``, ``X-API-Key`` by default). Empty = no auth.
+    warp_api_key: str = ""
+    warp_api_key_header: str = "X-API-Key"
     warp_timeout: float = 30.0
     warp_max_retries: int = 3
     warp_backoff_factor: float = 2.0
@@ -94,6 +98,9 @@ class Settings:
             host=get("FUSION_HOST", "0.0.0.0"),
             port=int(get("FUSION_PORT", "9000")),
             warp_url=get("WARP_URL", "http://localhost:8000"),
+            warp_api_key=get("WARP_API_KEY", ""),
+            warp_api_key_header=get("FUSION_WARP_API_KEY_HEADER", "X-API-Key").strip()
+            or "X-API-Key",
             warp_timeout=float(get("WARP_TIMEOUT", "30")),
             warp_max_retries=int(get("WARP_MAX_RETRIES", "3")),
             warp_backoff_factor=float(get("WARP_BACKOFF_FACTOR", "2")),
@@ -140,8 +147,10 @@ class Settings:
         return not self.is_production()
 
     def warp_http_defaults(self) -> dict[str, Any]:
-        """Resilience/timeout defaults merged under every Warp source config."""
+        """Auth/resilience/timeout defaults merged under every Warp source config."""
         return {
+            "api_key": self.warp_api_key or None,
+            "api_key_header": self.warp_api_key_header,
             "timeout": self.warp_timeout,
             "max_retries": self.warp_max_retries,
             "backoff_factor": self.warp_backoff_factor,

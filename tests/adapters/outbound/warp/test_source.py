@@ -197,6 +197,112 @@ class TestPushdown:
         assert rows.to_records() == [{"id": 1}]
 
 
+class TestCapabilities:
+    def test_defaults_before_connect(self):
+        source, _ = _source()
+        caps = source.warp_capabilities
+        assert caps.legacy and caps.raw_query and not caps.schema and not caps.export
+
+    def test_reads_0_10_capabilities(self):
+        source, transport = _source(export_max_rows=100)
+        source.connect()
+        caps = source.warp_capabilities
+        assert caps.version == "0.10.0"
+        assert not caps.legacy
+        assert caps.schema and caps.export and caps.arrow
+        assert caps.export_formats == ("json", "ndjson", "arrow")
+        assert caps.export_max_rows == 100
+        assert caps.raw_query is True
+        assert "in" in caps.filter_ops
+        assert source.supports_pushdown is True
+        assert transport.urls("GET") == [
+            "http://localhost:8080/health",
+            "http://localhost:8080/info",
+        ]  # no layout probe on a 0.10 Warp
+
+    def test_arrow_only_when_advertised(self):
+        source, _ = _source(arrow=False)
+        source.connect()
+        assert source.warp_capabilities.export and not source.warp_capabilities.arrow
+
+    def test_legacy_info_uses_settings(self):
+        source, transport = _source(mode="legacy", raw_query=False)
+        source.connect()
+        caps = source.warp_capabilities
+        assert caps.legacy and caps.version == "0.9.0"
+        assert not caps.schema and not caps.export
+        assert caps.raw_query is False
+        assert source.supports_pushdown is False
+        # Connecting costs exactly two requests; the layout is only probed
+        # if a db-scoped URL actually 404s.
+        assert transport.urls("GET") == [
+            "http://localhost:8080/health",
+            "http://localhost:8080/info",
+        ]
+        assert source._client.db_prefixed is True
+
+    def test_legacy_single_db_falls_back_to_unprefixed_routes(self):
+        source, transport = _source(mode="legacy", single_db_unprefixed=True)
+        source.connect()
+        assert source._client.db_prefixed is True  # nothing proved otherwise yet
+        assert source.fetch_table("users").column("id") == [1, 2, 3]
+        assert source._client.db_prefixed is False
+        assert transport.urls("GET")[2] == "http://localhost:8080/api/v1/db/users"  # the 404
+        assert transport.urls("GET")[3] == "http://localhost:8080/api/v1/users"
+        # The fallback is sticky: later fetches go straight to the right layout.
+        transport.requests.clear()
+        source.fetch_table("orders")
+        assert all("/db/" not in u for u in transport.urls("GET"))
+
+    def test_unknown_table_keeps_the_prefixed_layout(self):
+        source, _ = _source(mode="legacy")
+        source.connect()
+        with pytest.raises(QueryError):
+            source.fetch_table("ghost")
+        assert source._client.db_prefixed is True
+
+    def test_no_layout_fallback_on_a_0_10_warp(self):
+        source, transport = _source(single_db_unprefixed=True)  # 0.10 mode
+        source.connect()
+        with pytest.raises(QueryError):
+            source.fetch_table("users")  # 404 is taken at face value
+        assert source._client.db_prefixed is True
+
+    def test_custom_api_prefix(self):
+        source, transport = _source(api_prefix="/v2")
+        source.connect()
+        source.fetch_table("users")
+        assert transport.requests[-1][1] == "http://localhost:8080/v2/db/users"
+
+    def test_403_disables_pushdown(self):
+        source, transport = _source(deny_raw_query=True)
+        source.connect()
+        assert source.supports_pushdown is True
+        with pytest.raises(QueryError, match="403"):
+            source.execute_query("SELECT 1")
+        assert source.supports_pushdown is False
+        assert source.warp_capabilities.raw_query is True  # /info was not wrong, just refused
+
+    def test_other_errors_keep_pushdown(self):
+        source, transport = _source()
+        source.connect()
+        transport.fail_next("HTTP 500", status=500)
+        with pytest.raises(QueryError):
+            source.execute_query("SELECT 1")
+        assert source.supports_pushdown is True
+
+    def test_from_info_tolerates_garbage(self):
+        from fusion.adapters.outbound.warp.capabilities import from_info
+
+        assert from_info(None).legacy
+        assert from_info({"capabilities": "nope", "settings": {"api_prefix": "/x"}}).api_prefix == (
+            "/x"
+        )
+        caps = from_info({"capabilities": {"export": {"formats": "arrow"}}})
+        assert caps.export_formats == () and caps.db_prefix == "always"
+        assert caps.as_dict()["arrow"] is False
+
+
 class TestHelpers:
     def test_extract_tables_formats(self):
         assert extract_tables({"tables": ["t1", "t2"]}, "db") == ["t1", "t2"]
@@ -253,8 +359,15 @@ class TestHelpers:
 def test_from_config_builds_real_transport_by_default():
     source = WarpSource.from_config(
         "db",
-        {"base_url": "http://localhost:8080", "api_key": "k", "timeout": 2, "max_retries": 0},
+        {
+            "base_url": "http://localhost:8080",
+            "api_key": "k",
+            "api_key_header": "X-Token",
+            "timeout": 2,
+            "max_retries": 0,
+        },
     )
     assert isinstance(source._client, WarpHttpClient)
     assert source._client.database == "db"
+    assert source._client._transport._pool.session.headers["X-Token"] == "k"  # type: ignore[attr-defined]
     source.close()

@@ -17,7 +17,8 @@ class ConnectionPool:
     """Pooled HTTP session with exponential-backoff retries on transient errors.
 
     Redirects are never followed (SSRF guard) and the Warp API key, when
-    given, is sent as a bearer token on every request.
+    given, is sent on every request in ``api_key_header`` (Warp reads
+    ``X-API-Key`` by default; ``auth.header_name`` in its config).
     """
 
     def __init__(
@@ -28,6 +29,7 @@ class ConnectionPool:
         backoff_factor: float = 2.0,
         timeout: float = 30.0,
         api_key: str | None = None,
+        api_key_header: str = "X-API-Key",
     ) -> None:
         self.pool_size = pool_size
         self.max_overflow = max_overflow
@@ -38,8 +40,9 @@ class ConnectionPool:
         self.session = requests.Session()
         self.session.max_redirects = 0
         self.session.headers["Accept"] = "application/json"
+        self.api_key_header = api_key_header
         if api_key:
-            self.session.headers["Authorization"] = f"Bearer {api_key}"
+            self.session.headers[api_key_header] = api_key
 
         retry = Retry(
             total=max_retries,
