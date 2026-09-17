@@ -7,11 +7,18 @@ connection.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any, Protocol
 
-from fusion.domain.models import ColumnInfo, RowSet, TableRef, TableSchema
+from fusion.domain.models import (
+    ColumnInfo,
+    RowSet,
+    RowStream,
+    TableRef,
+    TableSchema,
+    TableSize,
+)
 
 
 class AnalyticsStore(Protocol):
@@ -37,6 +44,41 @@ class AnalyticsStore(Protocol):
         When ``rows`` is empty and ``schema`` is given, an empty table with
         the schema's columns is created so queries against it still work.
         """
+        ...
+
+    def materialize_stream(
+        self, table_name: str, stream: RowStream, schema: TableSchema | None = None
+    ) -> int:
+        """Replace ``table_name`` with the contents of ``stream``; returns the row count.
+
+        Batches are written as they arrive, so a table far larger than the
+        process's memory can be ingested. Implementations must not hold their
+        lock while waiting for the next batch: the producer is usually an
+        HTTP response.
+        """
+        ...
+
+    def append_stream(self, table_name: str, stream: RowStream) -> int:
+        """Add ``stream``'s rows to ``table_name`` (creating it when absent)."""
+        ...
+
+    def upsert(self, table_name: str, stream: RowStream, key_columns: Sequence[str]) -> int:
+        """Replace rows whose ``key_columns`` match, insert the rest.
+
+        Returns how many rows arrived from ``stream``.
+        """
+        ...
+
+    def delete_where_in(self, table_name: str, column: str, values: Iterable[Any]) -> int:
+        """Delete rows whose ``column`` is one of ``values``; returns how many went."""
+        ...
+
+    def table_size(self, table_name: str) -> TableSize:
+        """Rows and (when the store knows) bytes held by a table."""
+        ...
+
+    def rename_table(self, old_name: str, new_name: str) -> None:
+        """Rename within the same schema (used to publish a staged load atomically)."""
         ...
 
     def create_table_as(self, table_name: str, select_sql: str) -> None:

@@ -2,11 +2,64 @@
 
 import threading
 
+import pyarrow as pa
 import pytest
 
 from fusion.adapters.outbound.duckdb_store import DuckDBStore
 from fusion.domain.errors import BackupError, QueryError
-from fusion.domain.models import ColumnInfo, RowSet, TableRef, TableSchema
+from fusion.domain.models import ColumnInfo, ListRowStream, RowSet, TableRef, TableSchema
+
+
+class _ArrowStream:
+    """RowStream whose fast path hands the store an Arrow reader."""
+
+    def __init__(self, reader):
+        self._reader = reader
+        self.iterated = False
+
+    @property
+    def columns(self):
+        return tuple(self._reader.schema.names)
+
+    @property
+    def schema(self):
+        return None
+
+    def arrow_reader(self):
+        return self._reader
+
+    def __iter__(self):
+        self.iterated = True
+        return iter(())
+
+    def close(self):
+        return None
+
+
+class _ClosingStream:
+    """RowStream over fixed batches that records whether it was closed."""
+
+    def __init__(self, batches):
+        self._batches = batches
+        self.closed = False
+
+    @property
+    def columns(self):
+        return self._batches[0].columns if self._batches else ()
+
+    @property
+    def schema(self):
+        return None
+
+    def arrow_reader(self):
+        return None
+
+    def __iter__(self):
+        return iter(self._batches)
+
+    def close(self):
+        self.closed = True
+
 
 ORDERS = RowSet.from_records(
     [
@@ -230,3 +283,211 @@ class TestBackup:
                 s.restore_from(tmp_path / "missing.duckdb")
         finally:
             s.close()
+
+
+class TestStreamingIngest:
+    """Streams are written batch by batch, so a table can exceed memory."""
+
+    def test_materialize_stream_writes_every_batch(self, store):
+        store.create_schema("s")
+        stream = ListRowStream.from_records(
+            [{"id": i, "name": f"n{i}"} for i in range(250)], batch_size=100
+        )
+        assert store.materialize_stream("s.t", stream) == 250
+        assert store.count("s.t") == 250
+        assert store.execute("SELECT MAX(id) FROM s.t").rows == [(249,)]
+
+    def test_materialize_stream_replaces_previous_content(self, store):
+        store.create_schema("s")
+        store.materialize_stream("s.t", ListRowStream.from_records([{"id": 1}, {"id": 2}]))
+        assert store.materialize_stream("s.t", ListRowStream.from_records([{"id": 9}])) == 1
+        assert store.execute("SELECT id FROM s.t").rows == [(9,)]
+
+    def test_empty_stream_creates_a_typed_empty_table(self, store):
+        store.create_schema("s")
+        schema = TableSchema([ColumnInfo("id", "integer"), ColumnInfo("name", "varchar")])
+        assert store.materialize_stream("s.t", ListRowStream(RowSet.empty()), schema) == 0
+        assert store.count("s.t") == 0
+        assert [c.name for c in store.describe("s.t")] == ["id", "name"]
+
+    def test_empty_stream_without_a_schema_still_leaves_a_table(self, store):
+        store.create_schema("s")
+        assert store.materialize_stream("s.t", ListRowStream(RowSet.empty())) == 0
+        assert store.count("s.t") == 0
+
+    def test_declared_schema_types_win_over_the_first_batch(self, store):
+        store.create_schema("s")
+        schema = TableSchema([ColumnInfo("id", "integer"), ColumnInfo("code", "varchar")])
+        stream = ListRowStream.from_records(
+            [{"id": 1, "code": "10"}, {"id": 2, "code": "abc"}], batch_size=1
+        )
+        assert store.materialize_stream("s.t", stream, schema) == 2
+        types = {c.name: c.type for c in store.describe("s.t")}
+        assert types["id"] == "BIGINT" and types["code"] == "VARCHAR"
+        assert store.execute("SELECT code FROM s.t ORDER BY id").rows == [("10",), ("abc",)]
+
+    def test_arrow_reader_is_used_when_the_stream_offers_one(self, store):
+        store.create_schema("s")
+        table = pa.table({"id": [1, 2, 3], "amount": [1.5, 2.5, 3.5]})
+        stream = _ArrowStream(table.to_reader(max_chunksize=2))
+        assert store.materialize_stream("s.t", stream) == 3
+        assert store.count("s.t") == 3
+        assert stream.iterated is False  # the reader was handed over, not iterated
+        assert store.execute("SELECT SUM(amount) FROM s.t").rows == [(7.5,)]
+
+    def test_append_stream_adds_to_an_existing_table(self, store):
+        store.create_schema("s")
+        store.materialize_stream("s.t", ListRowStream.from_records([{"id": 1}]))
+        assert store.append_stream("s.t", ListRowStream.from_records([{"id": 2}, {"id": 3}])) == 2
+        assert store.execute("SELECT id FROM s.t ORDER BY id").rows == [(1,), (2,), (3,)]
+
+    def test_append_stream_creates_the_table_when_missing(self, store):
+        store.create_schema("s")
+        assert store.append_stream("s.t", ListRowStream.from_records([{"id": 1}])) == 1
+        assert store.count("s.t") == 1
+
+    def test_later_batches_are_cast_into_the_existing_columns(self, store):
+        store.create_schema("s")
+        stream = _ClosingStream(
+            [
+                RowSet.from_records([{"id": 1}]),
+                # A wider batch (an extra column) and a differently-typed but
+                # convertible value both land in the table as it already is.
+                RowSet.from_records([{"id": "2", "extra": "ignored"}]),
+            ]
+        )
+        assert store.materialize_stream("s.t", stream) == 2
+        assert store.execute("SELECT id FROM s.t ORDER BY id").rows == [(1,), (2,)]
+        assert [c.name for c in store.describe("s.t")] == ["id"]
+
+    def test_stream_is_closed_even_when_a_batch_cannot_be_written(self, store):
+        store.create_schema("s")
+        stream = _ClosingStream(
+            [RowSet.from_records([{"id": 1}]), RowSet.from_records([{"id": "not a number"}])]
+        )
+        with pytest.raises(QueryError, match="batch"):
+            store.materialize_stream("s.t", stream)
+        assert stream.closed
+
+
+class TestUpsert:
+    def test_replaces_matching_rows_and_inserts_the_rest(self, store):
+        store.create_schema("s")
+        store.materialize_stream(
+            "s.t", ListRowStream.from_records([{"id": 1, "v": "a"}, {"id": 2, "v": "b"}])
+        )
+        changed = ListRowStream.from_records([{"id": 2, "v": "B"}, {"id": 3, "v": "c"}])
+        assert store.upsert("s.t", changed, ["id"]) == 2
+        assert store.execute("SELECT id, v FROM s.t ORDER BY id").rows == [
+            (1, "a"),
+            (2, "B"),
+            (3, "c"),
+        ]
+
+    def test_composite_keys(self, store):
+        store.create_schema("s")
+        rows = [{"a": 1, "b": 1, "v": "x"}, {"a": 1, "b": 2, "v": "y"}]
+        store.materialize_stream("s.t", ListRowStream.from_records(rows))
+        store.upsert("s.t", ListRowStream.from_records([{"a": 1, "b": 2, "v": "Y"}]), ["a", "b"])
+        assert store.execute("SELECT v FROM s.t ORDER BY b").rows == [("x",), ("Y",)]
+
+    def test_creates_the_table_when_it_does_not_exist(self, store):
+        store.create_schema("s")
+        assert store.upsert("s.t", ListRowStream.from_records([{"id": 1}]), ["id"]) == 1
+        assert store.count("s.t") == 1
+
+    def test_staging_table_is_always_removed(self, store):
+        store.create_schema("s")
+        store.materialize_stream("s.t", ListRowStream.from_records([{"id": 1}]))
+        store.upsert("s.t", ListRowStream.from_records([{"id": 1}]), ["id"])
+        with pytest.raises(QueryError):
+            store.count("s.t__stage")
+
+    def test_without_key_columns_is_refused(self, store):
+        store.create_schema("s")
+        with pytest.raises(QueryError, match="key column"):
+            store.upsert("s.t", ListRowStream.from_records([{"id": 1}]), [])
+
+    def test_unknown_key_column_is_a_query_error(self, store):
+        store.create_schema("s")
+        store.materialize_stream("s.t", ListRowStream.from_records([{"id": 1}]))
+        with pytest.raises(QueryError, match="Upsert"):
+            store.upsert("s.t", ListRowStream.from_records([{"id": 1}]), ["nope"])
+        with pytest.raises(QueryError):
+            store.count("s.t__stage")  # still cleaned up
+
+
+class TestDeleteAndSize:
+    def test_delete_where_in(self, store):
+        store.create_schema("s")
+        store.materialize_stream(
+            "s.t", ListRowStream.from_records([{"id": i} for i in range(1, 6)])
+        )
+        assert store.delete_where_in("s.t", "id", [2, 4, 99]) == 2
+        assert store.execute("SELECT id FROM s.t ORDER BY id").rows == [(1,), (3,), (5,)]
+
+    def test_delete_where_in_with_no_values_is_a_no_op(self, store):
+        store.create_schema("s")
+        store.materialize_stream("s.t", ListRowStream.from_records([{"id": 1}]))
+        assert store.delete_where_in("s.t", "id", []) == 0
+        assert store.count("s.t") == 1
+
+    def test_delete_where_in_unknown_column(self, store):
+        store.create_schema("s")
+        store.materialize_stream("s.t", ListRowStream.from_records([{"id": 1}]))
+        with pytest.raises(QueryError, match="Delete"):
+            store.delete_where_in("s.t", "nope", [1])
+
+    def test_table_size(self, store):
+        store.create_schema("s")
+        store.materialize_stream("s.t", ListRowStream.from_records([{"id": i} for i in range(100)]))
+        size = store.table_size("s.t")
+        assert size.rows == 100
+        assert size.bytes is None or size.bytes >= 0
+
+    def test_table_size_of_an_unknown_table_raises(self, store):
+        with pytest.raises(QueryError):
+            store.table_size("s.nope")
+
+
+class TestRenameTable:
+    def test_publishes_a_staged_load(self, store):
+        store.create_schema("s")
+        store.materialize_stream("s.t__tmp", ListRowStream.from_records([{"id": 1}]))
+        store.rename_table("s.t__tmp", "s.t")
+        assert store.count("s.t") == 1
+        with pytest.raises(QueryError):
+            store.count("s.t__tmp")
+
+    def test_replaces_the_existing_target(self, store):
+        store.create_schema("s")
+        store.materialize_stream("s.t", ListRowStream.from_records([{"id": 1}, {"id": 2}]))
+        store.materialize_stream("s.t__tmp", ListRowStream.from_records([{"id": 9}]))
+        store.rename_table("s.t__tmp", "s.t")
+        assert store.execute("SELECT id FROM s.t").rows == [(9,)]
+
+    def test_bare_target_name_stays_in_the_same_schema(self, store):
+        store.create_schema("s")
+        store.materialize_stream("s.a", ListRowStream.from_records([{"id": 1}]))
+        store.rename_table("s.a", "b")
+        assert store.count("s.b") == 1
+
+    def test_cross_schema_rename_is_refused(self, store):
+        store.create_schema("s")
+        store.create_schema("other")
+        store.materialize_stream("s.a", ListRowStream.from_records([{"id": 1}]))
+        with pytest.raises(QueryError, match="across schemas"):
+            store.rename_table("s.a", "other.a")
+
+    def test_missing_source_table_is_a_query_error(self, store):
+        store.create_schema("s")
+        with pytest.raises(QueryError, match="rename"):
+            store.rename_table("s.nope", "s.other")
+
+
+def test_slice_table_names_with_dots_are_quoted_correctly(store):
+    # A slice table is ``schema.table__s_<hash>``; only the first dot splits.
+    store.create_schema("db")
+    store.materialize_stream("db.orders__s_ab12cd34ef", ListRowStream.from_records([{"id": 1}]))
+    assert store.count("db.orders__s_ab12cd34ef") == 1
+    assert store.execute('SELECT id FROM "db"."orders__s_ab12cd34ef"').rows == [(1,)]

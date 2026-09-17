@@ -93,6 +93,17 @@ class ConnectionPool:
             logger.error("HTTP %s %s failed after %.2fs: %s", method, url, time.time() - started, e)
             raise
 
+    def stream(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        """Like ``request`` but the body is left unread for the caller to consume.
+
+        ``decode_content`` is set so a gzipped response is transparently
+        inflated while it is read (Arrow IPC and NDJSON are read from
+        ``response.raw``, which does not decode by itself).
+        """
+        response = self.request(method, url, stream=True, **kwargs)
+        response.raw.decode_content = True
+        return response
+
     def get(self, url: str, **kwargs: Any) -> requests.Response:
         return self.request("GET", url, **kwargs)
 

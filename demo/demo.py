@@ -24,7 +24,16 @@ import pandas as pd
 
 from fusion import Settings, build_app, get_mcp_tools, get_openai_tools
 from fusion.adapters.inbound.sdk.formats import rowset_from_dataframe
-from fusion.domain.models import ColumnInfo, RowSet, SourceSchema, TableSchema
+from fusion.domain.models import (
+    ColumnInfo,
+    RowSet,
+    RowStream,
+    SourceCapabilities,
+    SourceSchema,
+    TableSchema,
+)
+from fusion.domain.slices import SliceSpec
+from fusion.ports.data_source import fetch_slice_in_memory
 
 # ---------------------------------------------------------------------------
 # FrameSource: a DataSource backed by in-memory DataFrames
@@ -63,6 +72,24 @@ class FrameSource:
         if max_rows is not None:
             df = df.head(max_rows)
         return rowset_from_dataframe(df)
+
+    def fetch_slice(
+        self, table: str, spec: SliceSpec = SliceSpec.FULL, max_rows: int | None = None
+    ) -> RowStream:
+        """Frames cannot filter themselves, so the slicing happens here."""
+        return fetch_slice_in_memory(self, table, spec, max_rows)
+
+    def estimate_slice(self, table: str, spec: SliceSpec = SliceSpec.FULL) -> int | None:
+        df = self._frames.get(table)
+        if df is None:
+            return None
+        if spec.is_full or not spec.predicates:
+            return len(df)
+        return sum(1 for record in df.to_dict("records") if spec.matches(record))
+
+    @property
+    def capabilities(self) -> SourceCapabilities:
+        return SourceCapabilities(pushdown=False, slices=True, arrow=False, row_estimates=True)
 
     @property
     def supports_pushdown(self) -> bool:

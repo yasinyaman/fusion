@@ -6,7 +6,16 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from fusion.domain.errors import ConnectionError, QueryError
-from fusion.domain.models import ColumnInfo, RowSet, SourceSchema, TableSchema
+from fusion.domain.models import (
+    ColumnInfo,
+    ListRowStream,
+    RowSet,
+    RowStream,
+    SourceCapabilities,
+    SourceSchema,
+    TableSchema,
+)
+from fusion.domain.slices import SliceSpec
 from tests.fakes.warp_transport import run_mock_sql
 
 
@@ -47,6 +56,10 @@ class FakeDataSource:
         pushdown: bool = False,
         sql_executor: Callable[[str], RowSet] | None = None,
         fail_connect: bool = False,
+        slices: bool = True,
+        arrow: bool = False,
+        row_estimates: dict[str, int] | None = None,
+        batch_size: int = 10_000,
     ) -> None:
         self.name = name
         self._tables: dict[str, RowSet] = {
@@ -56,6 +69,11 @@ class FakeDataSource:
         self.pushdown = pushdown
         self.sql_executor = sql_executor
         self.fail_connect = fail_connect
+        self.slices = slices
+        self.arrow = arrow
+        #: Pretend a table is huge without holding the rows (planner tests).
+        self.row_estimates = dict(row_estimates or {})
+        self.batch_size = batch_size
         self.connected = False
         self.closed = False
         self.calls: list[tuple[Any, ...]] = []
@@ -85,7 +103,11 @@ class FakeDataSource:
                 )
                 for col in rows.columns
             ]
-            schema[name] = TableSchema(columns=columns, row_count=len(rows))
+            schema[name] = TableSchema(
+                columns=columns,
+                row_count=len(rows),
+                row_estimate=self.row_estimates.get(name, len(rows)),
+            )
         return schema
 
     def fetch_table(self, table: str, max_rows: int | None = None) -> RowSet:
@@ -96,6 +118,46 @@ class FakeDataSource:
             raise QueryError(f"Failed to fetch data from {table}: unknown table")
         rows = self._tables[table]
         return rows.head(max_rows) if max_rows is not None else rows
+
+    def fetch_slice(
+        self, table: str, spec: SliceSpec = SliceSpec.FULL, max_rows: int | None = None
+    ) -> RowStream:
+        self.calls.append(("fetch_slice", table, spec, max_rows))
+        if not self.connected:
+            raise ConnectionError("Not connected. Call connect() first.")
+        if table not in self._tables:
+            raise QueryError(f"Failed to fetch data from {table}: unknown table")
+        records = [r for r in self._tables[table].to_records() if spec.matches(r)]
+        if spec.columns is not None:
+            keep = [c for c in self._tables[table].columns if c in spec.columns]
+            records = [{c: r[c] for c in keep} for r in records]
+        caps = [limit for limit in (spec.limit, max_rows) if limit is not None]
+        if caps:
+            records = records[: min(caps)]
+        return ListRowStream.from_records(records, batch_size=self.batch_size)
+
+    def estimate_slice(self, table: str, spec: SliceSpec = SliceSpec.FULL) -> int | None:
+        self.calls.append(("estimate_slice", table, spec))
+        if table not in self._tables:
+            return None
+        rows = self._tables[table]
+        if spec.is_full or not spec.predicates:
+            return self.row_estimates.get(table, len(rows))
+        matching = sum(1 for r in rows.to_records() if spec.matches(r))
+        if table not in self.row_estimates or not len(rows):
+            return matching
+        # Scale the real count up to the pretended table size, so a fake
+        # "huge" table also reports a proportionally large slice.
+        return round(matching * self.row_estimates[table] / len(rows))
+
+    @property
+    def capabilities(self) -> SourceCapabilities:
+        return SourceCapabilities(
+            pushdown=self.pushdown,
+            slices=self.slices,
+            arrow=self.arrow,
+            row_estimates=True,
+        )
 
     @property
     def supports_pushdown(self) -> bool:
@@ -141,7 +203,9 @@ class FakeSourceFactory:
 
     Config keys: ``tables`` (name -> records), ``pushdown`` (bool),
     ``sql_executor`` (callable, defaults to the mock SQL interpreter when
-    pushdown is on), ``fail_connect`` (bool).
+    pushdown is on), ``fail_connect`` (bool), ``slices``/``arrow`` (capability
+    flags), ``row_estimates`` (name -> pretended source-side size) and
+    ``batch_size``.
     """
 
     def __init__(self) -> None:
@@ -161,6 +225,10 @@ class FakeSourceFactory:
             pushdown=bool(config.get("pushdown", False)),
             sql_executor=executor,
             fail_connect=bool(config.get("fail_connect", False)),
+            slices=bool(config.get("slices", True)),
+            arrow=bool(config.get("arrow", False)),
+            row_estimates=config.get("row_estimates"),
+            batch_size=int(config.get("batch_size", 10_000)),
         )
         self.sources[name] = source
         return source
