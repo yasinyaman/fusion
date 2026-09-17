@@ -2,112 +2,94 @@
 
 **DuckDB-powered in-memory analytics engine with LLM tool support.**
 
-Fusion connects to PostgreSQL/MySQL databases via [Warp](https://github.com/yasinyaman/warp) REST API, loads data into DuckDB for fast columnar analytics, and exposes 10 tools for LLMs through MCP and OpenAI Function Calling.
+Fusion connects to PostgreSQL/MySQL databases through the [Warp](https://github.com/yasinyaman/warp) REST API, lazily loads the tables a query needs into DuckDB, and exposes 10 analytics tools to LLMs over MCP, a REST API and a Python SDK.
 
 ## Features
 
-- **10 LLM Tools** — `list_sources`, `describe_table`, `query_data`, `search_data`, `aggregate_data`, `create_view`, `list_views`, `refresh_view`, `load_table`, `cache_stats`
-- **Dual Format** — Tool definitions in both MCP (Model Context Protocol) and OpenAI Function Calling format
-- **3 Access Layers** — MCP Server (stdio), REST API (FastAPI/HTTP), Python SDK
-- **Query Pushdown** — Routes queries directly to source databases when possible, avoiding unnecessary data transfer
-- **Lazy Loading** — Only fetches table data from sources when actually referenced in queries
-- **SQL Guardrails** — Blocks destructive SQL (DROP, DELETE, INSERT) to protect data integrity
-- **LRU Cache** — Query result caching with configurable TTL for millisecond response times
-- **Materialized Views** — Pre-computed aggregation tables with scheduled auto-refresh
-- **Cross-Source Federation** — JOIN across multiple databases (PostgreSQL + MySQL) in a single query
-- **Auto-Discovery** — Automatically discovers all databases and tables from Warp
+- **10 LLM tools** — `list_sources`, `describe_table`, `query_data`, `search_data`, `aggregate_data`, `create_view`, `list_views`, `refresh_view`, `load_table`, `cache_stats`
+- **Three access layers** — MCP server (stdio), REST API (FastAPI), Python SDK; tool definitions in OpenAI function-calling and MCP formats
+- **Lazy loading** — connecting a source fetches metadata only; tables are pulled on first use
+- **Query pushdown** — single-source queries on unloaded tables run on the source database
+- **Cross-source federation** — JOIN PostgreSQL and MySQL tables in one DuckDB query
+- **SQL guardrails** — only read-only queries (SELECT, CTEs, UNION/INTERSECT/EXCEPT) reach DuckDB; file/network functions are denied and DuckDB's external access is latched off
+- **Query cache, materialized views, backups** — LRU cache with TTL, `mv_*` tables with scheduled refresh, timestamped backups with retention
+- **Resilient Warp client** — pooled connections with retry/backoff behind a circuit breaker, SSRF-guarded URLs
+- **Hexagonal architecture** — pure domain and application layers, adapters for DuckDB, sqlglot, Warp, FastAPI and MCP; every port has an in-memory fake for tests
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  1. Data Source Layer                                                       │
-│  ┌──────────────┐    REST     ┌─────────────────┐                          │
-│  │ PostgreSQL   │ ──────────► │                 │                          │
-│  │ MySQL        │             │ WarpConnector    │  auto-discovery           │
-│  └──────────────┘             │ (query pushdown) │  pagination, schema       │
-│       Warp REST API           └────────┬────────┘                          │
-└────────────────────────────────────────┼──────────────────────────────────┘
-                                          │
-┌─────────────────────────────────────────▼──────────────────────────────────┐
-│  2. DuckDB Core Layer                                                       │
-│  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │ OLAPEngine                                                            │  │
-│  │  • DuckDB (in-memory, columnar)   • QueryCache (LRU + TTL)            │  │
-│  │  • SchemaCatalog (multi-source)   • MaterializedViewManager           │  │
-│  │  • FetchStrategy (lazy load)      • SQLGuardrails (SELECT only)       │  │
-│  └──────────────────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────┬──────────────────────────────────┘
-                                          │
-┌─────────────────────────────────────────▼──────────────────────────────────┐
-│  3. LLM Tool Layer                                                          │
-│  ┌─────────────┐  ┌──────────────────┐  ┌─────────────────┐                 │
-│  │ ToolExecutor│  │ 10 tools         │  │ MCP / REST / SDK│                 │
-│  │ (dispatch)  │─►│ query_data, etc. │─►│ → LLM → Result  │                 │
-│  └─────────────┘  └──────────────────┘  └─────────────────┘                 │
-└─────────────────────────────────────────────────────────────────────────────┘
+                 inbound adapters                       outbound adapters
+   ┌──────────┐ ┌──────────┐ ┌──────────┐      ┌─────────────┐ ┌─────────────┐
+   │ REST API │ │ MCP srv  │ │ CLI/SDK  │      │ DuckDBStore │ │ WarpSource  │
+   └────┬─────┘ └────┬─────┘ └────┬─────┘      └──────┬──────┘ └──────┬──────┘
+        │            │            │                   │               │
+        ▼            ▼            ▼            AnalyticsStore     DataSource
+   ┌──────────────────────────────────────┐   ┌────────────────────────────────┐
+   │ application  (FusionApp)             │   │ ports (Protocols)              │
+   │  ToolService · QueryService          │◄──┤  AnalyticsStore · DataSource   │
+   │  SourceService · MaterializedView    │   │  SqlValidator · SqlAnalyzer    │
+   │  BackupService · FetchPlanner        │   │  QueryCache · Scheduler        │
+   └───────────────────┬──────────────────┘   └────────────────────────────────┘
+                       ▼
+   ┌──────────────────────────────────────┐   sqlglot policy · memory cache
+   │ domain  (pure Python)                │   threading scheduler · Warp HTTP
+   │  TableRef · RowSet · QueryResult     │   (pool + circuit breaker)
+   │  SchemaCatalog · guardrail text rules│
+   └──────────────────────────────────────┘
 ```
+
+Dependencies point inward: `domain` imports nothing, `ports` only `domain`, `application` only `domain` + `ports`. Adapters implement the ports, and `fusion.bootstrap.build_app()` wires them together. An architecture test enforces the rule.
 
 ## Installation
 
-```bash
-pip install -e .
-```
-
-Optional dependencies:
+Python 3.12+ and [uv](https://docs.astral.sh/uv/) (or pip):
 
 ```bash
-pip install -e ".[mcp]"     # MCP Server support
-pip install -e ".[rest]"    # REST API (FastAPI + uvicorn)
-pip install -e ".[dev]"     # Development (pytest, ruff, mypy)
-pip install -e ".[all]"     # Everything
+uv sync --all-extras          # development checkout
+pip install "fusion[all]"     # everything
+pip install "fusion[rest]"    # REST API (FastAPI + uvicorn)
+pip install "fusion[mcp]"     # MCP server
+pip install "fusion[pandas]"  # DataFrame conversions
 ```
+
+The core package depends only on `duckdb`, `pyarrow`, `requests` and `sqlglot`.
 
 ## Quick Start
 
 ### Python SDK
 
 ```python
-from fusion import OLAPEngine
+from fusion import Settings, build_app
 
-engine = OLAPEngine(memory_limit="4GB")
-engine.connect_source("mydb", {
+app = build_app(Settings(memory_limit="4GB"))          # or Settings.from_env()
+app.sources.connect("mydb", {
     "type": "warp",
     "base_url": "http://localhost:8000",
     "database": "mydb",
 })
 
-executor = engine.get_tool_executor()
+app.tools.list_sources()                                  # what is available (metadata only)
+app.tools.query_data("SELECT * FROM mydb.orders LIMIT 10")  # loads mydb.orders on first use
+app.tools.aggregate_data("mydb.orders", "status", "amount", "SUM")
+app.views.create("daily_revenue",
+                 "SELECT status, SUM(amount) AS total FROM mydb.orders GROUP BY status",
+                 refresh="hourly")
 
-# Discover available data
-sources = executor.list_sources()
+result = app.query.sql("SELECT COUNT(*) AS n FROM mydb.orders")  # QueryResult
+result.to_records(); result.to_markdown(); result.to_json()
 
-# Run an analytical query (auto-loads referenced tables)
-result = executor.query_data("SELECT * FROM mydb.orders LIMIT 10")
-
-# Aggregate data
-agg = executor.aggregate_data(
-    table="mydb.orders",
-    group_by="status",
-    agg_column="amount",
-    agg_func="SUM",
-)
-
-# Create a materialized view
-executor.create_view(
-    name="daily_revenue",
-    sql="SELECT status, SUM(amount) as total FROM mydb.orders GROUP BY status",
-    refresh="hourly",
-)
+app.close()
 ```
+
+`build_app` accepts replacement adapters (`store=`, `cache=`, `scheduler=`, `source_factory=`, `validator=`, `analyzer=`), which is how the tests plug in fakes.
 
 ### MCP Server (Claude Desktop / Cursor)
 
 ```bash
 fusion-mcp --warp-url http://localhost:8000 --database mydb
+fusion-mcp --warp-url http://localhost:8000 --auto-discover
 ```
-
-Configure in `claude_desktop_config.json`:
 
 ```json
 {
@@ -120,67 +102,61 @@ Configure in `claude_desktop_config.json`:
 }
 ```
 
-Auto-discover all databases:
-
-```bash
-fusion-mcp --warp-url http://localhost:8000 --auto-discover
-```
-
 ### REST API
 
 ```bash
 fusion-rest --warp-url http://localhost:8000 --auto-discover --port 9000
 ```
 
-Swagger UI at `http://localhost:9000/docs`. Key endpoints:
+Swagger UI at `http://localhost:9000/docs`.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/sources` | GET | List connected sources and tables |
-| `/tables/{source.table}/schema` | GET | Table schema details |
-| `/query` | POST | Execute analytical SQL query |
+| `/health`, `/readiness` | GET | Liveness / readiness |
+| `/sources` | GET | Connected sources and tables |
+| `/tables/{source.table}/schema` | GET | Table schema |
+| `/query` | POST | Analytical SQL (`{"sql": ...}`) |
 | `/search` | POST | Filter search on a table |
 | `/aggregate` | POST | GROUP BY aggregation |
 | `/views` | GET/POST | List or create materialized views |
 | `/views/{name}/refresh` | POST | Refresh a materialized view |
 | `/tables/{source.table}/load` | POST | Explicitly load a table |
 | `/cache/stats` | GET | Cache statistics |
-| `/tools/{tool_name}` | POST | Generic tool dispatch |
+| `/tools`, `/tools/{tool_name}` | GET/POST | Tool definitions and generic dispatch |
+| `/backup/list`, `/backup/create`, `/backup/stats` | GET/POST/GET | Backups |
+
+Configuration comes from `FUSION_*` / `WARP_URL` environment variables (see `.env.example`); in production an API key is mandatory and requests are rate-limited per key.
 
 ### OpenAI Function Calling
 
 ```python
-from fusion import get_openai_tools, OLAPEngine
+from fusion import Settings, build_app, get_openai_tools
 
-engine = OLAPEngine()
-engine.connect_source("mydb", {"type": "warp", "base_url": "http://localhost:8000"})
-executor = engine.get_tool_executor()
+app = build_app(Settings())
+app.sources.connect("mydb", {"type": "warp", "base_url": "http://localhost:8000"})
 
-# Get tool definitions for OpenAI Chat Completions API
-tools = get_openai_tools()
-
-# When the LLM makes a tool call:
-result = executor.execute("query_data", {"sql": "SELECT ..."})
+tools = get_openai_tools()                      # pass to the Chat Completions API
+result = app.tools.execute("query_data", {"sql": "SELECT ..."})   # when the model calls a tool
 ```
 
 ## Tools
 
 | Tool | Description |
 |------|-------------|
-| `list_sources` | Connected sources and tables with row counts |
+| `list_sources` | Connected sources and tables with row counts and load state |
 | `describe_table` | Table schema (columns, types, row count) |
-| `query_data` | Run analytical SQL on DuckDB (SELECT only, max 100 rows) |
-| `search_data` | Filter search on a table (exact match or LIKE with %) |
+| `query_data` | Run analytical SQL on DuckDB (read-only, max 100 rows) |
+| `search_data` | Filter search (exact match or LIKE with %) |
 | `aggregate_data` | GROUP BY aggregation (SUM, AVG, COUNT, MIN, MAX) |
 | `create_view` | Create a materialized view from a SELECT query |
 | `list_views` | List materialized views with refresh schedule |
 | `refresh_view` | Manually refresh a materialized view |
-| `load_table` | Explicitly load a table from source into DuckDB |
-| `cache_stats` | Query cache hit rate, entry count, memory usage |
+| `load_table` | Explicitly load a table from its source into DuckDB |
+| `cache_stats` | Query cache hit rate and entry count |
+
+Every tool returns a JSON-serializable dict; failures come back as `{"error": "..."}`.
 
 ## Warp Setup
-
-Fusion uses [Warp](https://github.com/yasinyaman/warp) as its data source gateway:
 
 ```bash
 git clone https://github.com/yasinyaman/warp.git
@@ -188,47 +164,44 @@ cd warp
 docker compose up -d
 ```
 
-Warp provides a REST API that federates access to PostgreSQL and MySQL databases.
-
 ## Project Structure
 
 ```
 fusion/
-├── __init__.py              # Public API exports
-├── engine.py                # OLAPEngine — main orchestration
-├── cache.py                 # QueryCache (LRU + TTL)
-├── catalog.py               # SchemaCatalog — multi-source metadata
-├── guardrails.py            # SQLGuardrails — blocks destructive SQL
-├── result.py                # QueryResult — format conversions
-├── strategy.py              # FetchStrategy — smart table loading
-├── exceptions.py            # Custom exception hierarchy
-├── connectors/
-│   ├── base.py              # BaseConnector (abstract)
-│   └── warp.py              # WarpConnector (Warp REST API)
-├── tools/
-│   ├── definitions.py       # 10 tool schemas (OpenAI + MCP)
-│   ├── executor.py          # ToolExecutor — routes tool calls
-│   ├── mcp_server.py        # MCP Server (stdio transport)
-│   └── rest_server.py       # REST API Server (FastAPI)
-└── views/
-    └── materialized.py      # MaterializedViewManager
+├── __init__.py                 # public SDK: Settings, build_app, FusionApp, models, errors
+├── bootstrap.py                # composition root (build_app, default_discovery)
+├── domain/                     # pure Python: models, catalog, identifiers, sql_text, views, errors
+├── ports/                      # Protocols: DataSource, AnalyticsStore, SqlValidator/Analyzer, QueryCache, Scheduler
+├── application/                # Settings, FetchPlanner, Source/Query/View/Backup/Tool services, FusionApp
+├── adapters/
+│   ├── outbound/               # duckdb_store, sqlglot_policy, memory_cache, threading_scheduler, registry
+│   │   └── warp/               # http (pool + circuit breaker + SSRF guard), source, discovery
+│   └── inbound/
+│       ├── rest/               # FastAPI app, routes, middleware (auth, logging), rate limit
+│       ├── mcp/                # MCPServer adapter
+│       ├── cli/                # fusion-rest, fusion-mcp entry points
+│       └── sdk/                # pandas / Arrow conversions (optional)
+└── observability/              # logging setup and formatters
+tests/                          # domain, ports (contract tests), adapters, application, inbound, e2e
+demo/demo.py                    # in-process demo over synthetic data
 ```
 
 ## Development
 
 ```bash
-pip install -e ".[all]"
-pytest tests/ -v           # 236 tests
-ruff check fusion/         # Lint
-python -m demo.demo        # Demo with synthetic data
+uv sync --all-extras
+uv run pytest                    # 540+ tests, coverage gate 80%
+uv run ruff check fusion tests demo && uv run ruff format --check fusion tests demo
+uv run mypy fusion               # strict on domain/ports/application
+uv run python -m demo.demo       # demo with synthetic data (--scale 0.1 for a quick run)
 ```
 
 ## Requirements
 
-- Python 3.10+
-- DuckDB 1.2+
+- Python 3.12+
+- DuckDB 1.5+
 - [Warp](https://github.com/yasinyaman/warp) (data source gateway)
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE) for details.
+Apache 2.0 — see [LICENSE](LICENSE).

@@ -83,7 +83,6 @@ filterwarnings = [
 source = ["fusion"]
 
 [tool.coverage.report]
-# Ratchet: keep coverage from regressing (currently ~78%). Raised to 80 once
-# the hexagonal layout makes backup/CLI paths testable.
-fail_under = 75
+# Ratchet: keep coverage from regressing (currently ~97%).
+fail_under = 80
 show_missing = true
