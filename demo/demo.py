@@ -1,298 +1,331 @@
-"""Fusion v5 demo — Smart Data Fetching + Multi-Source Federation.
+"""Fusion demo — lazy loading, cross-source federation and the 10 LLM tools.
 
-Demonstrates:
-- Metadata-only connection (no eager data loading)
-- FetchStrategy: SQL table extraction via sqlglot
-- On-demand lazy table loading
-- load_table tool for explicit loading
-- Cross-source federation (JOINs across different Warp sources)
-- ToolExecutor with 10 tools (MCP + OpenAI)
-- SQL guardrails via tools
-- Cache performance
+Runs entirely in-process: synthetic pandas DataFrames stand in for three
+Warp databases through ``FrameSource``, a tiny DataSource adapter. Everything
+else is the real thing: FusionApp, the planner, lazy loading into DuckDB
+(under the external-access security latch), guardrails, cache and tools.
+
+    python -m demo.demo            # full size (~885K rows)
+    python -m demo.demo --scale 0.1
 """
 
+from __future__ import annotations
+
+import argparse
 import json
 import random
 import string
 import time
+from collections.abc import Mapping
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from fusion import OLAPEngine, FetchStrategy
-from fusion.tools import ToolExecutor, get_openai_tools, get_mcp_tools
+from fusion import Settings, build_app, get_mcp_tools, get_openai_tools
+from fusion.adapters.inbound.sdk.formats import rowset_from_dataframe
+from fusion.domain.models import ColumnInfo, RowSet, SourceSchema, TableSchema
+
+# ---------------------------------------------------------------------------
+# FrameSource: a DataSource backed by in-memory DataFrames
+# ---------------------------------------------------------------------------
 
 
-def generate_synthetic_data():
-    """Generate synthetic e-commerce data (885K rows)."""
+class FrameSource:
+    """Serves pandas DataFrames through the DataSource port (no pushdown)."""
+
+    source_type = "frames"
+
+    def __init__(self, name: str, frames: Mapping[str, pd.DataFrame]) -> None:
+        self.name = name
+        self._frames = dict(frames)
+        self.fetches: list[str] = []
+
+    def connect(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+    def discover_schema(self) -> SourceSchema:
+        schema: SourceSchema = {}
+        for table, df in self._frames.items():
+            columns = [
+                ColumnInfo(str(col), _sql_type(str(df[col].dtype)), bool(df[col].isna().any()))
+                for col in df.columns
+            ]
+            schema[table] = TableSchema(columns=columns, row_count=len(df))
+        return schema
+
+    def fetch_table(self, table: str, max_rows: int | None = None) -> RowSet:
+        self.fetches.append(table)
+        df = self._frames[table]
+        if max_rows is not None:
+            df = df.head(max_rows)
+        return rowset_from_dataframe(df)
+
+    @property
+    def supports_pushdown(self) -> bool:
+        return False
+
+
+def _sql_type(dtype: str) -> str:
+    dtype = dtype.lower()
+    if "int" in dtype:
+        return "integer"
+    if "float" in dtype:
+        return "double"
+    if "bool" in dtype:
+        return "boolean"
+    if "datetime" in dtype:
+        return "timestamp"
+    return "varchar"
+
+
+# ---------------------------------------------------------------------------
+# Synthetic data
+# ---------------------------------------------------------------------------
+
+
+def generate_synthetic_data(
+    scale: float = 1.0, seed: int = 42
+) -> dict[str, dict[str, pd.DataFrame]]:
+    """Three "databases" of e-commerce data; ``scale`` shrinks every table."""
+    rng = np.random.default_rng(seed)
+    random.seed(seed)
+    n_users = max(10, int(5_000 * scale))
+    n_products = max(5, int(200 * scale))
+    n_orders = max(20, int(100_000 * scale))
+    n_sessions = max(20, int(200_000 * scale))
+    n_events = max(20, int(500_000 * scale))
+    n_tx = max(20, int(80_000 * scale))
+
     segments = ["premium", "standard", "basic", "enterprise", "trial"]
     categories = ["Electronics", "Clothing", "Food", "Books", "Sports", "Home", "Toys", "Beauty"]
 
-    users = pd.DataFrame({
-        "id": range(1, 5001),
-        "name": [f"User_{i}" for i in range(1, 5001)],
-        "email": [f"user{i}@example.com" for i in range(1, 5001)],
-        "segment": [random.choice(segments) for _ in range(5000)],
-        "created_at": pd.date_range("2023-01-01", periods=5000, freq="h"),
-    })
-
-    products = pd.DataFrame({
-        "id": range(1, 201),
-        "name": [f"Product_{i}" for i in range(1, 201)],
-        "category": [random.choice(categories) for _ in range(200)],
-        "price": np.round(np.random.uniform(5, 500, 200), 2),
-    })
-
-    product_ids = np.random.choice(products["id"].values, 100_000)
-    price_map = dict(zip(products["id"].values, products["price"].values))
-
-    orders = pd.DataFrame({
-        "id": range(1, 100_001),
-        "user_id": np.random.choice(users["id"].values, 100_000),
-        "product_id": product_ids,
-        "amount": np.array([price_map[pid] * np.random.uniform(0.8, 1.2) for pid in product_ids]).round(2),
-        "order_date": pd.date_range("2024-01-01", periods=100_000, freq="5min"),
-    })
-
-    sessions = pd.DataFrame({
-        "session_id": [f"sess_{''.join(random.choices(string.hexdigits[:16], k=12))}" for _ in range(200_000)],
-        "user_id": np.random.choice(users["id"].values, 200_000),
-        "duration_sec": np.random.exponential(300, 200_000).astype(int),
-        "page_views": np.random.poisson(5, 200_000),
-        "created_at": pd.date_range("2024-01-01", periods=200_000, freq="2min"),
-    })
-
-    events = pd.DataFrame({
-        "event_id": range(1, 500_001),
-        "session_id": np.random.choice(sessions["session_id"].values, 500_000),
-        "event_type": [random.choice(["page_view", "click", "scroll", "form_submit", "purchase", "search", "logout"]) for _ in range(500_000)],
-        "timestamp": pd.date_range("2024-01-01", periods=500_000, freq="1min"),
-    })
-
-    transactions = pd.DataFrame({
-        "tx_id": range(1, 80_001),
-        "user_id": np.random.choice(users["id"].values, 80_000),
-        "amount": np.round(np.random.uniform(10, 1000, 80_000), 2),
-        "year": np.random.choice([2022, 2023, 2024], 80_000, p=[0.2, 0.3, 0.5]),
-        "tx_date": pd.date_range("2022-01-01", periods=80_000, freq="15min"),
-    })
-
-    return users, products, orders, sessions, events, transactions
-
-
-def register_metadata_only(engine, users, products, orders, sessions, events, transactions):
-    """Register metadata WITHOUT loading data — simulates metadata-only connect_source()."""
-    def cols_from_df(df):
-        return [{"name": c, "type": str(df[c].dtype), "nullable": True} for c in df.columns]
-
-    # Create schemas
-    engine.execute_raw("CREATE SCHEMA IF NOT EXISTS warp_ecommerce")
-    engine.execute_raw("CREATE SCHEMA IF NOT EXISTS warp_analytics")
-    engine.execute_raw("CREATE SCHEMA IF NOT EXISTS warp_finance")
-
-    # Register METADATA ONLY — no data loaded!
-    engine.catalog.register_source("warp_ecommerce", "warp", {
-        "users": {"columns": cols_from_df(users), "row_count": len(users)},
-        "products": {"columns": cols_from_df(products), "row_count": len(products)},
-        "orders": {"columns": cols_from_df(orders), "row_count": len(orders)},
-    })
-    engine.catalog.register_source("warp_analytics", "warp", {
-        "sessions": {"columns": cols_from_df(sessions), "row_count": len(sessions)},
-        "events": {"columns": cols_from_df(events), "row_count": len(events)},
-    })
-    engine.catalog.register_source("warp_finance", "warp", {
-        "transactions": {"columns": cols_from_df(transactions), "row_count": len(transactions)},
-    })
-
-    # Store DataFrames for on-demand loading simulation
+    users = pd.DataFrame(
+        {
+            "id": range(1, n_users + 1),
+            "name": [f"User_{i}" for i in range(1, n_users + 1)],
+            "email": [f"user{i}@example.com" for i in range(1, n_users + 1)],
+            "segment": rng.choice(segments, n_users),
+            "created_at": pd.date_range("2023-01-01", periods=n_users, freq="h"),
+        }
+    )
+    products = pd.DataFrame(
+        {
+            "id": range(1, n_products + 1),
+            "name": [f"Product_{i}" for i in range(1, n_products + 1)],
+            "category": rng.choice(categories, n_products),
+            "price": np.round(rng.uniform(5, 500, n_products), 2),
+        }
+    )
+    product_ids = rng.choice(products["id"].to_numpy(), n_orders)
+    price_map = dict(zip(products["id"].tolist(), products["price"].tolist(), strict=True))
+    orders = pd.DataFrame(
+        {
+            "id": range(1, n_orders + 1),
+            "user_id": rng.choice(users["id"].to_numpy(), n_orders),
+            "product_id": product_ids,
+            "amount": np.round(
+                np.array([price_map[int(pid)] for pid in product_ids])
+                * rng.uniform(0.8, 1.2, n_orders),
+                2,
+            ),
+            "order_date": pd.date_range("2024-01-01", periods=n_orders, freq="5min"),
+        }
+    )
+    sessions = pd.DataFrame(
+        {
+            "session_id": [
+                "sess_" + "".join(random.choices(string.hexdigits[:16], k=12))
+                for _ in range(n_sessions)
+            ],
+            "user_id": rng.choice(users["id"].to_numpy(), n_sessions),
+            "duration_sec": rng.exponential(300, n_sessions).astype(int),
+            "device": rng.choice(["mobile", "desktop", "tablet"], n_sessions),
+        }
+    )
+    events = pd.DataFrame(
+        {
+            "event_id": range(1, n_events + 1),
+            "user_id": rng.choice(users["id"].to_numpy(), n_events),
+            "event_type": rng.choice(["view", "click", "cart", "purchase"], n_events),
+            "ts": pd.date_range("2024-01-01", periods=n_events, freq="min"),
+        }
+    )
+    transactions = pd.DataFrame(
+        {
+            "tx_id": range(1, n_tx + 1),
+            "order_id": rng.choice(orders["id"].to_numpy(), n_tx),
+            "method": rng.choice(["card", "bank", "wallet"], n_tx),
+            "fee": np.round(rng.uniform(0.1, 5.0, n_tx), 2),
+        }
+    )
     return {
-        "warp_ecommerce.users": users,
-        "warp_ecommerce.products": products,
-        "warp_ecommerce.orders": orders,
-        "warp_analytics.sessions": sessions,
-        "warp_analytics.events": events,
-        "warp_finance.transactions": transactions,
+        "warp_ecommerce": {"users": users, "products": products, "orders": orders},
+        "warp_analytics": {"sessions": sessions, "events": events},
+        "warp_finance": {"transactions": transactions},
     }
 
 
-def simulate_on_demand_load(engine, data_store, tables):
-    """Simulate on-demand loading by materializing requested tables."""
-    loaded = []
-    for full_name in tables:
-        if engine.catalog.is_loaded(full_name):
-            continue
-        if full_name in data_store:
-            df = data_store[full_name]
-            with engine._lock:
-                engine._conn.execute(
-                    f"CREATE OR REPLACE TABLE {full_name} AS SELECT * FROM df"
-                )
-            engine.catalog.mark_loaded(full_name)
-            loaded.append(full_name)
-    return loaded
+# ---------------------------------------------------------------------------
+# Demo
+# ---------------------------------------------------------------------------
 
 
-def run_demo():
-    """Run Fusion v3 demo."""
-    print("=" * 70)
-    print("  Fusion v5 — Smart Data Fetching + Federation Demo")
-    print("  Lazy Loading + Cross-Source JOINs + 10 Tools")
-    print("=" * 70)
+def _ms(started: float) -> str:
+    return f"{(time.perf_counter() - started) * 1000:.0f}ms"
 
-    # --- Step 1: Generate data ---
-    print("\n[1/9] Generating synthetic data (885K rows)...")
+
+def run_demo(scale: float = 1.0, quiet: bool = False) -> dict[str, Any]:
+    """Run every step; returns a few facts so tests can assert on them."""
+    say = (lambda *a, **k: None) if quiet else print
+    facts: dict[str, Any] = {}
+
+    say("=" * 70)
+    say("  Fusion demo — lazy loading, federation, 10 LLM tools")
+    say("=" * 70)
+
+    say("\n[1/9] Generating synthetic data...")
     t0 = time.perf_counter()
-    users, products, orders, sessions, events, transactions = generate_synthetic_data()
-    total = sum(len(df) for df in [users, products, orders, sessions, events, transactions])
-    print(f"  Generated {total:,} rows in {(time.perf_counter()-t0)*1000:.0f}ms")
+    frames = generate_synthetic_data(scale)
+    total = sum(len(df) for db in frames.values() for df in db.values())
+    say(f"  Generated {total:,} rows in {_ms(t0)}")
+    facts["rows_generated"] = total
 
-    # --- Step 2: Metadata-only connection ---
-    print("\n[2/9] Connecting sources (METADATA ONLY — no data loaded!)...")
-    t0 = time.perf_counter()
-    engine = OLAPEngine(database=":memory:", threads=4, memory_limit="4GB")
-    data_store = register_metadata_only(engine, users, products, orders, sessions, events, transactions)
-    elapsed = (time.perf_counter() - t0) * 1000
-    print(f"  Connected in {elapsed:.0f}ms (metadata only)")
+    say("\n[2/9] Building the app and connecting sources (metadata only)...")
+    sources: dict[str, FrameSource] = {}
 
-    # Show that NO tables are loaded
-    all_tables = engine.catalog.list_tables()
-    unloaded = engine.catalog.list_unloaded_tables()
-    print(f"  Tables in catalog: {len(all_tables)}")
-    print(f"  Tables loaded in DuckDB: {len(all_tables) - len(unloaded)} (none!)")
-    print(f"  Tables NOT loaded: {len(unloaded)}")
-    for t in unloaded:
-        print(f"    - {t} (loaded={engine.catalog.is_loaded(t)})")
+    def factory(name: str, config: Mapping[str, Any]) -> FrameSource:
+        sources[name] = FrameSource(name, frames[name])
+        return sources[name]
 
-    # --- Step 3: FetchStrategy demo ---
-    print("\n[3/9] FetchStrategy — SQL table extraction...")
-    strategy = FetchStrategy(engine.catalog)
+    app = build_app(Settings(memory_limit="4GB", threads=4), source_factory=factory)
+    try:
+        t0 = time.perf_counter()
+        for name in frames:
+            app.sources.connect(name, {"type": "frames"})
+        say(f"  Connected {len(frames)} sources in {_ms(t0)}")
+        tables = app.catalog.list_tables()
+        say(f"  Tables in catalog: {len(tables)}")
+        say(f"  Loaded in DuckDB : {sum(app.catalog.is_loaded(t) for t in tables)}")
+        for ref in tables:
+            say(f"    - {ref} (loaded={app.catalog.is_loaded(ref)})")
+        facts["tables"] = len(tables)
 
-    test_queries = [
-        "SELECT * FROM warp_ecommerce.orders WHERE amount > 100",
-        "SELECT o.*, u.name FROM warp_ecommerce.orders o JOIN warp_ecommerce.users u ON o.user_id = u.id",
-        "SELECT o.*, e.event_type FROM warp_ecommerce.orders o JOIN warp_analytics.events e ON o.id = e.event_id",
-    ]
+        say("\n[3/9] FetchPlanner — which tables does a query need?")
+        planner = app.views._planner  # the same planner every service uses
+        for sql in [
+            "SELECT * FROM warp_ecommerce.orders WHERE amount > 100",
+            "SELECT o.*, u.name FROM warp_ecommerce.orders o "
+            "JOIN warp_ecommerce.users u ON o.user_id = u.id",
+            "SELECT o.*, e.event_type FROM warp_ecommerce.orders o "
+            "JOIN warp_analytics.events e ON o.user_id = e.user_id",
+        ]:
+            plan = planner.plan_for_sql(sql)
+            say(f"  {sql[:60]}...")
+            say(f"    -> needs: {[t.full_name for t in plan.targets]}")
 
-    for sql in test_queries:
-        plan = strategy.plan_for_sql(sql)
-        targets = [t.full_name for t in plan.targets]
-        print(f"  SQL: {sql[:70]}...")
-        print(f"    -> Tables needed: {targets}")
+        say("\n[4/9] Lazy loading — the first query pulls only what it references...")
+        t0 = time.perf_counter()
+        result = app.query.sql(
+            "SELECT u.segment, COUNT(*) AS orders, ROUND(SUM(o.amount), 2) AS revenue "
+            "FROM warp_ecommerce.orders o JOIN warp_ecommerce.users u ON o.user_id = u.id "
+            "GROUP BY u.segment ORDER BY revenue DESC"
+        )
+        fetched = list(sources["warp_ecommerce"].fetches)
+        say(f"  {result.row_count} rows in {_ms(t0)}; loaded: {fetched}")
+        say(result.to_markdown())
+        facts["loaded_after_first_query"] = fetched
+        assert not app.catalog.is_loaded("warp_analytics.events")
 
-    # --- Step 4: On-demand loading ---
-    print("\n[4/9] On-demand loading — only fetch what's needed...")
+        say("\n[5/9] load_table tool — explicit loading via the tool layer...")
+        say(f"  {app.tools.execute('load_table', {'table': 'warp_finance.transactions'})}")
+        say(f"  {app.tools.execute('load_table', {'table': 'warp_finance.transactions'})}")
 
-    # Simulate: user asks about orders+users -> only load those 2 tables
-    plan = strategy.plan_for_sql("""
-        SELECT u.segment, COUNT(*) as orders, ROUND(SUM(o.amount), 2) as revenue
-        FROM warp_ecommerce.orders o
-        JOIN warp_ecommerce.users u ON o.user_id = u.id
-        GROUP BY u.segment ORDER BY revenue DESC
-    """)
-    needed = [t.full_name for t in plan.targets]
-    print(f"  Query needs: {needed}")
+        say("\n[6/9] Cross-source federation — JOIN across three 'databases'...")
+        t0 = time.perf_counter()
+        result = app.query.sql(
+            "SELECT t.method, COUNT(*) AS payments, ROUND(SUM(o.amount), 2) AS volume, "
+            "COUNT(DISTINCT s.device) AS devices "
+            "FROM warp_finance.transactions t "
+            "JOIN warp_ecommerce.orders o ON t.order_id = o.id "
+            "JOIN warp_analytics.sessions s ON s.user_id = o.user_id "
+            "GROUP BY t.method ORDER BY volume DESC"
+        )
+        say(f"  {result.row_count} rows in {_ms(t0)}")
+        say(result.to_markdown())
+        facts["federation_rows"] = result.row_count
 
-    t0 = time.perf_counter()
-    loaded = simulate_on_demand_load(engine, data_store, needed)
-    elapsed = (time.perf_counter() - t0) * 1000
-    print(f"  Loaded {len(loaded)} tables in {elapsed:.0f}ms: {loaded}")
-    print(f"  Tables still unloaded: {engine.catalog.list_unloaded_tables()}")
+        say("\n[7/9] Tools — the same 10 tools an LLM calls (MCP / OpenAI)...")
+        say(f"  OpenAI tool defs: {len(get_openai_tools())}, MCP tool defs: {len(get_mcp_tools())}")
+        agg = app.tools.execute(
+            "aggregate_data",
+            {
+                "table": "warp_analytics.sessions",
+                "group_by": "device",
+                "agg_column": "duration_sec",
+                "agg_func": "AVG",
+            },
+        )
+        say(f"  aggregate_data -> {json.dumps(agg['rows'][:3], default=str)}")
+        search = app.tools.execute(
+            "search_data",
+            {
+                "table": "warp_ecommerce.products",
+                "filter_column": "category",
+                "filter_value": "Books",
+            },
+        )
+        say(f"  search_data    -> {search['row_count']} rows")
+        view = app.tools.execute(
+            "create_view",
+            {
+                "name": "revenue_by_category",
+                "sql": "SELECT p.category, ROUND(SUM(o.amount), 2) AS revenue "
+                "FROM warp_ecommerce.orders o "
+                "JOIN warp_ecommerce.products p ON o.product_id = p.id "
+                "GROUP BY p.category",
+            },
+        )
+        say(f"  create_view    -> {view}")
+        top = app.tools.execute(
+            "query_data",
+            {"sql": "SELECT * FROM mv_revenue_by_category ORDER BY revenue DESC LIMIT 3"},
+        )
+        say(f"  query_data(mv) -> {json.dumps(top['rows'], default=str)}")
+        facts["view_rows"] = top["row_count"]
 
-    # Now execute the query
-    result = engine.sql("""
-        SELECT u.segment, COUNT(*) as orders, ROUND(SUM(o.amount), 2) as revenue
-        FROM warp_ecommerce.orders o
-        JOIN warp_ecommerce.users u ON o.user_id = u.id
-        GROUP BY u.segment ORDER BY revenue DESC
-    """, auto_load=False)
-    print(f"\n  Query result: {result.row_count} rows, {result.execution_time:.1f}ms")
-    for row in result.to_dict():
-        print(f"    {row['segment']:12s} | orders={row['orders']:,} | revenue=${row['revenue']:,.2f}")
+        say("\n[8/9] Guardrails — destructive SQL is refused before it reaches DuckDB...")
+        for sql in ["DROP TABLE warp_ecommerce.orders", "SELECT * FROM read_csv('/etc/passwd')"]:
+            error = app.tools.execute("query_data", {"sql": sql})["error"]
+            say(f"  {sql[:45]:45s} -> {error[:60]}")
 
-    # --- Step 5: ToolExecutor with lazy loading ---
-    print("\n[5/9] ToolExecutor — 10 tools...")
-    executor = ToolExecutor(engine)
+        say("\n[9/9] Cache — repeat a query...")
+        sql = "SELECT COUNT(*) AS n FROM warp_ecommerce.orders"
+        t0 = time.perf_counter()
+        first = app.query.sql(sql)
+        t_first = _ms(t0)
+        t0 = time.perf_counter()
+        second = app.query.sql(sql)
+        say(f"  first : {t_first} (cache={first.from_cache})")
+        say(f"  second: {_ms(t0)} (cache={second.from_cache})")
+        say(f"  {app.tools.execute('cache_stats', {})}")
+        facts["cache_hit"] = second.from_cache
+    finally:
+        app.close()
 
-    # list_sources shows loaded status
-    result = executor.execute("list_sources", {})
-    print("\n  [tool: list_sources]")
-    for src in result["sources"]:
-        for t in src["tables"]:
-            status = "LOADED" if t["loaded"] else "NOT LOADED"
-            print(f"    {t['name']:40s} rows={t['row_count']:>8,}  [{status}]")
+    say("\nDone.")
+    return facts
 
-    # load_table tool
-    print("\n  [tool: load_table] — Explicit table loading")
-    simulate_on_demand_load(engine, data_store, ["warp_ecommerce.products"])
-    result = executor.execute("load_table", {"table": "warp_ecommerce.products"})
-    print(f"    load_table('warp_ecommerce.products') -> {result}")
 
-    # --- Step 6: Cross-source federation ---
-    print("\n[6/9] Cross-source federation — JOIN across Warp sources...")
-    # Load analytics tables
-    simulate_on_demand_load(engine, data_store, [
-        "warp_analytics.sessions",
-        "warp_analytics.events",
-    ])
-
-    result = executor.execute("query_data", {"sql": """
-        SELECT u.segment,
-               COUNT(DISTINCT s.session_id) as sessions,
-               ROUND(AVG(s.duration_sec), 0) as avg_duration
-        FROM warp_ecommerce.users u
-        JOIN warp_analytics.sessions s ON u.id = s.user_id
-        GROUP BY u.segment ORDER BY sessions DESC
-    """})
-    print("  Cross-source JOIN: warp_ecommerce.users + warp_analytics.sessions")
-    print(f"  Result: {result['row_count']} rows")
-    for row in result["rows"]:
-        print(f"    {row['segment']:12s} | sessions={row['sessions']:,} | avg_duration={row['avg_duration']}s")
-
-    # --- Step 7: Tool format demos ---
-    print("\n[7/9] Tool format demos...")
-    openai_tools = get_openai_tools()
-    mcp_tools = get_mcp_tools()
-    print(f"  OpenAI tools: {len(openai_tools)} definitions")
-    print(f"  MCP tools:    {len(mcp_tools)} definitions")
-    tool_names = [t["function"]["name"] for t in openai_tools]
-    print(f"  Tool names: {tool_names}")
-
-    # --- Step 8: Cache performance ---
-    print("\n[8/9] Cache performance...")
-    test_sql = "SELECT segment, COUNT(*) as cnt FROM warp_ecommerce.users GROUP BY segment"
-    r1 = engine.sql(test_sql, auto_load=False)
-    r2 = engine.sql(test_sql, auto_load=False)
-    print(f"  First call:  {r1.execution_time:.1f}ms (cached={r1.from_cache})")
-    print(f"  Second call: {r2.execution_time:.1f}ms (cached={r2.from_cache})")
-
-    # --- Step 9: SQL Guardrails ---
-    print("\n[9/9] SQL guardrails through tool layer...")
-    dangerous_queries = [
-        "DROP TABLE warp_ecommerce.users",
-        "DELETE FROM warp_ecommerce.orders WHERE 1=1",
-        "INSERT INTO warp_ecommerce.users VALUES (9999, 'hack')",
-    ]
-    for sql in dangerous_queries:
-        result = executor.execute("query_data", {"sql": sql})
-        status = "BLOCKED" if "error" in result else "PASSED (unexpected!)"
-        print(f"  [{status}] {sql[:60]}")
-
-    safe = executor.execute("query_data", {"sql": "SELECT COUNT(*) as cnt FROM warp_ecommerce.users"})
-    print(f"  [SAFE] SELECT COUNT(*) -> {safe['rows'][0]['cnt']:,} rows")
-
-    # --- Cleanup ---
-    engine.close()
-
-    print("\n" + "=" * 70)
-    print("  Fusion v5 demo completed successfully!")
-    print("  Key features demonstrated:")
-    print("    - Metadata-only connection (no eager data loading)")
-    print("    - FetchStrategy: SQL table extraction via sqlglot")
-    print("    - On-demand lazy table loading")
-    print("    - Cross-source federation (JOINs across Warp sources)")
-    print("    - 10 tools (MCP + OpenAI)")
-    print("=" * 70)
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Fusion demo")
+    parser.add_argument("--scale", type=float, default=1.0, help="dataset scale (default 1.0)")
+    args = parser.parse_args(argv)
+    run_demo(scale=args.scale)
 
 
 if __name__ == "__main__":
-    run_demo()
+    main()

@@ -35,8 +35,9 @@ htmlcov/
 .git/
 .gitignore
 
-# Docs
+# Docs (README.md is needed by the build backend)
 *.md
+!README.md
 docs/
 
 # Config

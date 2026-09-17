@@ -15,21 +15,27 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v6
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
+
+      - name: Check lockfile is up to date
+        run: uv lock --check
 
       - name: Install dependencies (locked)
         run: uv sync --all-extras --frozen
 
       - name: Lint (ruff)
-        run: uv run ruff check fusion/ tests/
+        run: uv run ruff check fusion/ tests/ demo/
+
+      - name: Format check (ruff)
+        run: uv run ruff format --check fusion/ tests/ demo/
 
       - name: Run tests (with coverage gate)
         run: uv run pytest tests/ -v --cov=fusion --cov-report=term-missing
@@ -40,7 +46,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v6
         with:
           python-version: "3.12"
           enable-cache: true
@@ -57,7 +63,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v6
 
       - name: Audit dependencies (pip-audit)
         run: |

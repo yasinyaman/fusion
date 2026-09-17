@@ -2,9 +2,72 @@
 
 All notable changes to Fusion OLAP Engine.
 
-## [Unreleased]
+## [1.0.0] - 2026-09-17
 
-### Security
+### Breaking
+- **Hexagonal architecture.** The package is now `domain / ports / application /
+  adapters` with `fusion.bootstrap.build_app(settings) -> FusionApp` as the
+  composition root. `OLAPEngine`, `ToolExecutor`, `engine.get_tool_executor()`,
+  `execute_raw()`, `fusion.config` and the `fusion.{engine,cache,catalog,
+  guardrails,result,strategy,backup,connectors,tools,views,middleware,utils}`
+  modules are gone. Use `app.sources / app.query / app.views / app.backup /
+  app.tools` instead; tool names, arguments and result shapes are unchanged.
+- **Python >= 3.12**; CI runs 3.12 / 3.13 / 3.14.
+- **pandas and tabulate left the core dependencies.** Rows travel as the domain
+  `RowSet`; DuckDB ingest uses pyarrow. `fusion[pandas]` provides
+  `to_dataframe()` / `rowset_from_dataframe()`; `QueryResult.to_markdown()` is
+  pure Python and `to_csv()` returns a string.
+- **In-memory backups are `EXPORT DATABASE` directories** (`fusion_backup_<ts>/`)
+  and require `FUSION_DUCKDB_EXTERNAL_ACCESS=true`; file databases are
+  snapshotted to `.duckdb` files. `/backup/create` returns `409` when backups
+  are disabled or impossible.
+- `FUSION_ALLOWED_HOSTS` and `FUSION_RATE_LIMIT_BURST` (never used) were removed.
+- Entry points moved to `fusion.adapters.inbound.cli.{rest_main,mcp_main}:main`
+  (the `fusion-rest` / `fusion-mcp` commands are unchanged).
+
+### Fixed
+- Demo crashed under the DuckDB external-access latch (replacement scan);
+  it now runs on `FrameSource` + `build_app` (`tests/test_demo.py`).
+- In-memory backups never worked (`current_database()` returns `memory`,
+  not `:memory:`) and `EXPORT DATABASE` directories were not listed
+  (`tests/application/test_backup.py::TestInMemory`).
+- Restoring a backup reopened DuckDB **without** the security latch and
+  settings; `DuckDBStore.restore_from` re-applies them
+  (`tests/adapters/outbound/test_duckdb_store.py::TestBackup::test_restore_from_reapplies_security_latch`).
+- Guardrails rejected `UNION` / `INTERSECT` / `EXCEPT` and parenthesised
+  selects; any `exp.Query` is now allowed while DDL/DML/commands stay blocked
+  (`tests/adapters/outbound/test_sqlglot_policy.py::TestSetOperations`).
+- The query cache upper-cased string literals, so `'alice'` and `'ALICE'`
+  shared an entry; quoted segments are now kept verbatim in the key
+  (`tests/adapters/outbound/test_memory_cache.py::test_literal_case_is_significant`).
+- `create_view` on a table that had never been queried failed with "table
+  does not exist"; the view service loads referenced tables first
+  (`tests/application/test_views.py::TestLazyLoad`).
+- The Dockerfile's exec-form `CMD` passed a literal `${WARP_URL:-...}` to
+  `fusion-rest`; settings now come from the environment
+  (`tests/test_packaging.py::test_dockerfile_cmd_has_no_unexpanded_variables`).
+
+### Added
+- Ports with in-memory fakes and contract tests (`tests/ports`), an
+  architecture test that enforces the dependency rule, and e2e scenarios over
+  a fake Warp HTTP transport (541 tests, coverage gate 80%).
+- `CircuitBreaker` and `ConnectionPool` are now wired into the Warp HTTP
+  transport (retry/backoff behind a per-source breaker, no redirects).
+- `Settings.from_env()` replaces the import-time `Config` singleton; the MCP
+  server now honours memory/thread/ingest settings and logs to stderr.
+- REST: constant-time API-key comparison, rate limiting enforced for every
+  route via `SlowAPIMiddleware`, sanitized `X-Request-ID`, `409` for backup
+  errors, no module-level globals (`create_app(fusion, settings)`).
+- Docker image built with `uv sync --frozen` from `uv.lock` on Python 3.13;
+  `docker-compose.yml` without the obsolete `version` key.
+
+### Changed
+- Dependencies: duckdb 1.5, pyarrow 25, sqlglot 30, mcp 2 (`MCPServer`),
+  fastapi 0.141, pytest 9, mypy 2, ruff 0.16; `uv.lock` regenerated.
+- Materialized-view references (`mv_*`) now disable pushdown for the query.
+- Unqualified table names resolve in source registration order (deterministic).
+
+### Security (carried over from the unreleased hardening work)
 - **DuckDB external access disabled by default** — `enable_external_access=FALSE`
   on every engine connection blocks `read_csv`/`read_parquet`/`glob`/`ATTACH`/
   `COPY` against the local filesystem and network (local file exfiltration /

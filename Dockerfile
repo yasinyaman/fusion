@@ -1,59 +1,51 @@
-# Multi-stage build for optimized production image
-FROM python:3.11-slim as builder
+# syntax=docker/dockerfile:1
+#
+# Multi-stage build: resolve the locked dependency set with uv, then copy the
+# ready-made virtualenv into a slim runtime image with a non-root user.
 
-WORKDIR /build
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy dependency files
-COPY pyproject.toml ./
-COPY fusion/ ./fusion/
-
-# Install dependencies
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -e ".[all]"
-
-# Production stage
-FROM python:3.11-slim
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never
 
 WORKDIR /app
 
-# Create non-root user
-RUN groupadd -r fusion && useradd -r -g fusion fusion
+# Dependencies first (cached unless the lock changes); README.md is read by the
+# build backend, so it must be present for the project install below.
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-dev --extra rest --extra mcp --no-install-project
 
-# Install runtime dependencies only
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy Python packages from builder
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
-
-# Copy application code
 COPY fusion/ ./fusion/
-COPY pyproject.toml ./
+RUN uv sync --frozen --no-dev --extra rest --extra mcp
 
-# Install in production mode
-RUN pip install --no-cache-dir -e ".[all]"
 
-# Create directories for data persistence
-RUN mkdir -p /app/data /app/logs && \
-    chown -R fusion:fusion /app
+FROM python:3.13-slim
 
-# Switch to non-root user
+WORKDIR /app
+
+RUN groupadd -r fusion && useradd -r -g fusion fusion \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /app/data /app/logs \
+    && chown -R fusion:fusion /app
+
+COPY --from=builder --chown=fusion:fusion /app/.venv /app/.venv
+COPY --from=builder --chown=fusion:fusion /app/fusion /app/fusion
+
+ENV PATH="/app/.venv/bin:$PATH" \
+    PYTHONUNBUFFERED=1
+
 USER fusion
 
-# Health check
+# Shell form on purpose: the port variable must expand here.
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-9000}/health || exit 1
+    CMD curl -f "http://localhost:${FUSION_PORT:-9000}/health" || exit 1
 
-# Expose port
 EXPOSE 9000
 
-# Default command (can be overridden in docker-compose)
-CMD ["fusion-rest", "--warp-url", "${WARP_URL:-http://warp:8000}", "--port", "9000"]
+# Exec form runs no shell, so nothing here may rely on ${VAR} expansion: the
+# Warp URL, port and every other setting come from the environment
+# (WARP_URL, FUSION_PORT, ...) through Settings.from_env().
+CMD ["fusion-rest", "--auto-discover"]
