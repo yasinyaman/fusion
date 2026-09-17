@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
 
+from fusion.application.semijoin import SemiJoinExecutor
 from fusion.domain.catalog import SchemaCatalog
 from fusion.domain.errors import ConnectionError, QueryError
 from fusion.domain.identifiers import IDENTIFIER_RE
@@ -42,6 +43,9 @@ class SourceService:
         self._scheduler = scheduler
         self._policy = policy or MaterializationPolicy()
         self._clock = clock
+        self._semi_join_executor = SemiJoinExecutor(
+            store, catalog, self._policy, clock, max_ingest_rows
+        )
         self._sources: dict[str, DataSource] = {}
         self._auto_refresh: ScheduledJob | None = None
 
@@ -150,10 +154,8 @@ class SourceService:
         return self._materialize(target.ref, spec, source).table_name
 
     def _semi_join(self, target: TargetPlan, source: DataSource) -> str:
-        raise QueryError(
-            f"Semi-join fetching is not available for {target.ref.full_name}; "
-            "narrow the query with a WHERE condition instead."
-        )
+        """Fetch only the rows whose key appears in the already-loaded driver."""
+        return self._semi_join_executor.execute(target, source).table_name
 
     def _materialize(
         self,

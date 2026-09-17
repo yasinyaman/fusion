@@ -382,3 +382,22 @@ class TestSmartTransfer:
             assert _pushdown_calls(transport)
         finally:
             app.close()
+
+
+class TestSemiJoinOverWarp:
+    """A join to a huge Warp table fetches only the rows that can match."""
+
+    def test_keys_are_passed_to_warp(self, big_app, big_transport):
+        result = big_app.query.sql(
+            "SELECT u.name, COUNT(*) AS n FROM ecommerce.users u "
+            "JOIN ecommerce.orders o ON u.id = o.user_id "
+            "GROUP BY u.name ORDER BY n DESC, u.name"
+        )
+        assert result.to_records()[0] == {"name": "Alice", "n": 3}
+        assert big_app.catalog.is_loaded("ecommerce.users")
+        assert not big_app.catalog.is_loaded("ecommerce.orders")
+        loaded = big_app.catalog.slices_of("ecommerce.orders")[0]
+        assert loaded.derived_from == "semijoin:ecommerce.users.id"
+        exported = [p for m, u, p in big_transport.requests if u.endswith("/orders/export")]
+        assert exported, "the big table was never exported"
+        assert "filter[user_id][in]" in exported[-1]
