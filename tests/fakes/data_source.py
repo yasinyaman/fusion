@@ -7,6 +7,7 @@ from typing import Any
 
 from fusion.domain.errors import ConnectionError, QueryError
 from fusion.domain.models import ColumnInfo, RowSet, SourceSchema, TableSchema
+from tests.fakes.warp_transport import run_mock_sql
 
 
 def _infer_type(values: list[Any]) -> str:
@@ -133,3 +134,33 @@ class FakeDataSource:
 
     def set_table(self, table: str, records: list[dict[str, Any]]) -> None:
         self._tables[table] = RowSet.from_records(records)
+
+
+class FakeSourceFactory:
+    """SourceFactory building FakeDataSources from config; remembers them.
+
+    Config keys: ``tables`` (name -> records), ``pushdown`` (bool),
+    ``sql_executor`` (callable, defaults to the mock SQL interpreter when
+    pushdown is on), ``fail_connect`` (bool).
+    """
+
+    def __init__(self) -> None:
+        self.sources: dict[str, FakeDataSource] = {}
+
+    def __call__(self, name: str, config: Mapping[str, Any]) -> FakeDataSource:
+        tables = dict(config.get("tables", {}))
+        executor = config.get("sql_executor")
+        if executor is None and config.get("pushdown"):
+
+            def executor(sql: str) -> RowSet:
+                return RowSet.from_records(run_mock_sql(sql, tables))
+
+        source = FakeDataSource(
+            name,
+            tables,
+            pushdown=bool(config.get("pushdown", False)),
+            sql_executor=executor,
+            fail_connect=bool(config.get("fail_connect", False)),
+        )
+        self.sources[name] = source
+        return source
