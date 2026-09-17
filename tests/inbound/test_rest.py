@@ -226,3 +226,28 @@ class TestRateLimit:
         statuses = [c.get("/cache/stats").status_code for _ in range(4)]
         assert statuses[:3] == [200, 200, 200]
         assert statuses[3] == 429
+
+
+class TestLoadTableBody:
+    def test_load_without_a_body_loads_the_whole_table(self, client):
+        response = client.post("/tables/test_db.users/load")
+        assert response.status_code == 200
+        assert response.json()["status"] in ("loaded", "already_loaded")
+
+    def test_load_with_a_where_body_loads_a_slice(self, client):
+        response = client.post(
+            "/tables/test_db.orders/load",
+            json={"where": "product = 'A'", "columns": ["id", "product"]},
+        )
+        body = response.json()
+        assert response.status_code == 200
+        assert body["status"] == "loaded"
+        assert body["slice"] == "columns=id,product where product = 'A'"
+        assert body["row_count"] == 3
+
+    def test_an_unpushable_where_is_a_client_error(self, client):
+        response = client.post(
+            "/tables/test_db.orders/load", json={"where": "product = 'A' OR id = 1"}
+        )
+        assert response.status_code == 400
+        assert "AND of simple conditions" in response.json()["detail"]

@@ -177,11 +177,18 @@ class TestSubsumes:
         assert loaded.subsumes(SliceSpec(predicates=(Predicate("d", "gt", 200),)))
         assert not loaded.subsumes(SliceSpec(predicates=(Predicate("d", "gt", 50),)))
 
-    def test_limited_slices_only_match_themselves(self):
+    def test_a_limited_slice_only_matches_itself(self):
         limited = SliceSpec(predicates=(Predicate("s", "eq", "x"),), limit=10)
         assert limited.subsumes(SliceSpec(predicates=(Predicate("s", "eq", "x"),), limit=10))
         assert not limited.subsumes(SliceSpec(predicates=(Predicate("s", "eq", "x"),)))
-        assert not SliceSpec.FULL.subsumes(limited)
+        assert not limited.subsumes(SliceSpec(predicates=(Predicate("s", "eq", "x"),), limit=5))
+
+    def test_a_complete_slice_answers_a_limited_request(self):
+        # Taking 10 rows out of a fully loaded table is done locally.
+        assert SliceSpec.FULL.subsumes(SliceSpec(limit=10))
+        loaded = SliceSpec(predicates=(Predicate("s", "eq", "x"),))
+        assert loaded.subsumes(SliceSpec(predicates=(Predicate("s", "eq", "x"),), limit=10))
+        assert not loaded.subsumes(SliceSpec(limit=10))
 
 
 def _loaded(spec, name="t", rows=10, at=1.0, **kwargs):

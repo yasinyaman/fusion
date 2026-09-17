@@ -31,7 +31,7 @@ def test_dockerfile_cmd_has_no_unexpanded_variables():
 
 
 def test_version_is_consistent():
-    assert __version__ == "1.0.0"
+    assert __version__ == "1.1.0"
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
     assert "version" in pyproject["project"]["dynamic"]
     assert pyproject["tool"]["hatch"]["version"]["path"] == "fusion/__init__.py"

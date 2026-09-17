@@ -3,6 +3,8 @@
 import pytest
 
 from fusion.application.tool_schemas import TOOL_NAMES
+from fusion.domain.slices import Predicate
+from tests.data import TEST_DB
 
 RESULT_KEYS = {"columns", "rows", "row_count", "truncated", "execution_time_ms", "from_cache"}
 
@@ -222,7 +224,7 @@ class TestMaterializedViewOperations:
 class TestLoadTable:
     def test_load_table(self, app_lazy, factory):
         result = app_lazy.tools.load_table("warp_main.users")
-        assert result == {"status": "loaded", "table": "warp_main.users"}
+        assert result == {"status": "loaded", "table": "warp_main.users", "row_count": 5}
         assert app_lazy.tools.load_table("warp_main.users") == {
             "status": "already_loaded",
             "table": "warp_main.users",
@@ -306,3 +308,136 @@ class TestPushdownTools:
         result = app_lazy.tools.aggregate_data("warp_main.orders", "product", "amount", "SUM")
         assert result["rows"][0]["product"] == "A"
         assert app_lazy.catalog.is_loaded("warp_main.orders")
+
+
+class TestLoadSlice:
+    """``load_table`` with a filter fetches only the matching rows."""
+
+    @pytest.fixture
+    def app(self, settings, scheduler, factory):
+        from dataclasses import replace
+
+        from fusion.bootstrap import build_app
+
+        a = build_app(
+            replace(settings, full_load_max_rows=2, slice_max_rows=100),
+            scheduler=scheduler,
+            source_factory=factory,
+        )
+        a.sources.connect("db", {"type": "fake", "tables": TEST_DB})
+        yield a
+        a.close()
+
+    def test_where_loads_a_slice(self, app, factory):
+        result = app.tools.load_table("db.users", where="segment = 'premium'")
+        assert result["status"] == "loaded"
+        assert result["row_count"] == 2
+        assert result["complete"] is True
+        assert result["slice"] == "where segment = 'premium'"
+        assert result["slice_table"].startswith("db.users__s_")
+        assert not app.catalog.is_loaded("db.users")
+        call = factory.sources["db"].calls_named("fetch_slice")[-1]
+        assert call[2].predicates == (Predicate("segment", "eq", "premium"),)
+
+    def test_columns_alone_load_a_projection(self, app):
+        result = app.tools.load_table("db.users", columns=["id", "name"])
+        assert result["slice"] == "columns=id,name"
+        assert {c.name for c in app.store.describe(result["slice_table"])} == {"id", "name"}
+
+    def test_where_and_columns_together(self, app):
+        result = app.tools.load_table(
+            "db.users", where="segment = 'basic'", columns=["id", "segment"]
+        )
+        assert result["row_count"] == 2
+        assert "columns=id,segment" in result["slice"] and "where" in result["slice"]
+
+    def test_the_slice_answers_later_queries(self, app):
+        app.tools.load_table("db.users", where="segment = 'premium'")
+        rows = app.tools.query_data("SELECT name FROM db.users WHERE segment = 'premium'")
+        assert [r["name"] for r in rows["rows"]] == ["Alice", "Charlie"]
+
+    def test_an_unpushable_where_is_refused_with_help(self, app):
+        for where in ["segment = 'a' OR id = 1", "LOWER(segment) = 'a'", "id > (SELECT 1)"]:
+            error = app.tools.load_table("db.users", where=where)["error"]
+            assert "AND of simple conditions" in error
+
+    def test_a_big_table_without_a_filter_is_refused(self, app):
+        error = app.tools.load_table("db.users")["error"]
+        assert "Refusing to load db.users" in error
+        assert app.catalog.slices_of("db.users") == []
+
+    def test_unknown_columns_are_rejected(self, app):
+        # Validation errors surface as an error result through the dispatch.
+        for columns in (["nope"], ["a;b"]):
+            result = app.tools.execute("load_table", {"table": "db.users", "columns": columns})
+            assert "error" in result
+        assert app.catalog.slices_of("db.users") == []
+
+    def test_list_sources_reports_the_slice_and_the_estimate(self, app):
+        app.tools.load_table("db.users", where="segment = 'premium'")
+        tables = {t["name"]: t for t in app.tools.list_sources()["sources"][0]["tables"]}
+        users = tables["db.users"]
+        assert users["loaded"] is False
+        assert users["row_estimate"] == 5
+        assert len(users["slices"]) == 1
+        assert users["slices"][0]["rows"] == 2
+        assert users["slices"][0]["where"] == "where segment = 'premium'"
+
+    def test_a_fully_loaded_table_reports_no_slices(self, app):
+        app.sources.ensure_loaded(["db.orders"])
+        tables = {t["name"]: t for t in app.tools.list_sources()["sources"][0]["tables"]}
+        assert tables["db.orders"]["loaded"] is True
+        assert tables["db.orders"]["slices"] == []
+        assert tables["db.orders"]["row_count"] == 6
+
+
+class TestSearchOnABigTable:
+    @pytest.fixture
+    def app(self, settings, scheduler, factory):
+        from dataclasses import replace
+
+        from fusion.bootstrap import build_app
+
+        a = build_app(
+            replace(settings, full_load_max_rows=2, slice_max_rows=100),
+            scheduler=scheduler,
+            source_factory=factory,
+        )
+        a.sources.connect("db", {"type": "fake", "tables": TEST_DB})
+        yield a
+        a.close()
+
+    def test_search_loads_only_the_matching_rows(self, app, factory):
+        result = app.tools.search_data("db.users", "name", "Alice")
+        assert result["row_count"] == 1
+        assert result["rows"][0]["segment"] == "premium"
+        assert not app.catalog.is_loaded("db.users")
+        call = factory.sources["db"].calls_named("fetch_slice")[-1]
+        assert call[2].predicates == (Predicate("name", "eq", "Alice"),)
+
+    def test_a_like_search_uses_a_like_slice(self, app, factory):
+        result = app.tools.search_data("db.users", "segment", "%prem%")
+        assert result["row_count"] == 2
+        assert factory.sources["db"].calls_named("fetch_slice")[-1][2].predicates == (
+            Predicate("segment", "like", "%prem%"),
+        )
+
+    def test_a_second_search_reuses_the_slice(self, app, factory):
+        app.tools.search_data("db.users", "name", "Alice")
+        before = len(factory.sources["db"].calls_named("fetch_slice"))
+        app.tools.search_data("db.users", "name", "Alice")
+        assert len(factory.sources["db"].calls_named("fetch_slice")) == before
+
+    def test_a_numeric_column_is_not_sliced_by_a_string(self, app):
+        # "1" is not 1 at every source, so the search falls back to the table
+        # and is refused rather than quietly returning nothing.
+        result = app.tools.execute(
+            "search_data", {"table": "db.users", "filter_column": "id", "filter_value": "1"}
+        )
+        assert "error" in result and "Refusing to load" in result["error"]
+
+    def test_a_loaded_table_is_searched_directly(self, app, factory):
+        app.sources.ensure_loaded(["db.orders"])
+        before = len(factory.sources["db"].calls_named("fetch_slice"))
+        assert app.tools.search_data("db.orders", "product", "A")["row_count"] == 3
+        assert len(factory.sources["db"].calls_named("fetch_slice")) == before

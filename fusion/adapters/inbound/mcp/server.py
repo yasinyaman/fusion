@@ -90,9 +90,11 @@ def create_mcp_server(fusion: FusionApp, name: str = "fusion") -> Any:
         return _dump(tools.execute("refresh_view", {"name": name}))
 
     @server.tool()
-    def load_table(table: str) -> str:
-        """Load a specific table from its data source into DuckDB for querying."""
-        return _dump(tools.execute("load_table", {"table": table}))
+    def load_table(table: str, where: str | None = None, columns: list[str] | None = None) -> str:
+        """Load a table, or only the rows and columns ``where``/``columns`` describe."""
+        return _dump(
+            tools.execute("load_table", {"table": table, "where": where, "columns": columns})
+        )
 
     @server.tool()
     def cache_stats() -> str:

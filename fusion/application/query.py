@@ -40,6 +40,14 @@ class QueryService:
         self._store = store
         self._sources = sources
 
+    @property
+    def planner(self) -> FetchPlanner:
+        return self._planner
+
+    @property
+    def analyzer(self) -> SqlAnalyzer:
+        return self._analyzer
+
     def sql(
         self,
         query: str,

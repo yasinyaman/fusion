@@ -99,7 +99,7 @@ def build_app(
         scheduler=scheduler,
         clock=clock,
     )
-    tools = ToolService(query, sources, views, store, catalog, cache)
+    tools = ToolService(query, sources, views, store, catalog, cache, planner, analyzer)
 
     return FusionApp(
         settings=settings,

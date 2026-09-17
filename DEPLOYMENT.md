@@ -86,6 +86,14 @@ All settings are environment variables read once at startup by `Settings.from_en
 | `FUSION_DUCKDB_EXTERNAL_ACCESS` | `false` | Allow DuckDB filesystem/network access (needed for export backups) |
 | `FUSION_MAX_TEMP_DIRECTORY_SIZE` | *(unbounded)* | Cap on-disk spill, e.g. `10GB` |
 | `FUSION_MAX_INGEST_ROWS` | `0` | Max rows pulled per table when loading (0 = unlimited) |
+| `WARP_API_KEY` | *(none)* | API key sent to Warp on every request |
+| `FUSION_WARP_API_KEY_HEADER` | `X-API-Key` | Header carrying it (Warp's `auth.header_name`) |
+| `FUSION_FULL_LOAD_MAX_ROWS` | `500000` | Largest table loaded whole without a filter |
+| `FUSION_SLICE_MAX_ROWS` | `500000` | Largest single slice (filtered read) |
+| `FUSION_SLICE_BUDGET_ROWS` | `2000000` | Rows held across all slices before LRU eviction |
+| `FUSION_SEMI_JOIN_MAX_KEYS` | `50000` | Most join keys passed to a source |
+| `FUSION_IN_CHUNK_SIZE` | `1000` | Keys per request when passing them |
+| `FUSION_REFRESH_CONFIG` | *(none)* | JSON: `{"src.table": {"watermark_column": "...", "key_columns": [...]}}` |
 | `FUSION_CACHE_TTL` / `FUSION_CACHE_MAX_ENTRIES` | `300` / `500` | Query cache |
 | `FUSION_BACKUP_ENABLED` | `false` | Enable automated backups |
 | `FUSION_BACKUP_INTERVAL` / `FUSION_BACKUP_RETENTION_DAYS` | `3600` / `7` | Backup schedule and retention |
@@ -183,7 +191,9 @@ Fusion is stateless (in-memory DuckDB). Run several instances behind a load bala
 
 **Rate limit exceeded** — `429`: raise `FUSION_RATE_LIMIT` or wait for the window.
 
-**Out of memory** — raise `FUSION_MEMORY_LIMIT`, set `FUSION_MAX_TEMP_DIRECTORY_SIZE` to allow spilling, or cap ingest with `FUSION_MAX_INGEST_ROWS`.
+**Out of memory** — raise `FUSION_MEMORY_LIMIT`, set `FUSION_MAX_TEMP_DIRECTORY_SIZE` to allow spilling, or cap ingest with `FUSION_MAX_INGEST_ROWS`. Lower `FUSION_FULL_LOAD_MAX_ROWS` and `FUSION_SLICE_BUDGET_ROWS` so big tables are read as slices instead of whole.
+
+**"Refusing to load ..."** — the table is larger than `FUSION_FULL_LOAD_MAX_ROWS` and the query gives nothing to narrow it by. Add a WHERE condition on a column, select fewer columns, join it to a smaller table on an equality key, or raise the limit if the machine has the memory. Slicing needs Warp to do the filtering; against Warp >= 0.10 it also streams Arrow and reports table sizes without counting rows.
 
 **Backup returns 409** — backups are disabled (`FUSION_BACKUP_ENABLED`) or the in-memory export needs `FUSION_DUCKDB_EXTERNAL_ACCESS=true`.
 

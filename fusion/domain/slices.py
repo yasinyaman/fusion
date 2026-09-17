@@ -189,8 +189,14 @@ class SliceSpec:
         )
 
     def subsumes(self, other: SliceSpec) -> bool:
-        """True when a slice loaded for ``self`` contains everything ``other`` needs."""
-        if self.limit is not None or other.limit is not None:
+        """True when a slice loaded for ``self`` contains everything ``other`` needs.
+
+        A limit on *this* slice means only some of the matching rows were
+        ever loaded, so it can answer nothing but the identical request. A
+        limit on the *request* is harmless: taking fewer rows out of a
+        complete slice is something the query does locally.
+        """
+        if self.limit is not None:
             return self.normalized() == other.normalized()
         if self.columns is not None and (
             other.columns is None or not other.columns <= self.columns

@@ -150,9 +150,12 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
     {
         "name": "load_table",
         "description": (
-            "Load a specific table from its data source into DuckDB for querying. "
+            "Load a table from its data source into DuckDB for querying. "
             "Use this if list_sources shows a table is not yet loaded. "
-            "After loading, the table is available for query_data and other tools."
+            "A table larger than the configured limit is refused unless you "
+            "narrow it with 'where' and/or 'columns', which fetch only the "
+            "matching rows and columns. After loading, the table is available "
+            "to query_data and the other tools under its own name."
         ),
         "parameters": {
             "type": "object",
@@ -160,6 +163,21 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
                 "table": {
                     "type": "string",
                     "description": "Full table name in 'source.table' format to load",
+                },
+                "where": {
+                    "type": "string",
+                    "description": (
+                        "Optional filter sent to the source: an AND of simple "
+                        "conditions comparing a column to a literal (=, !=, <, "
+                        "<=, >, >=, LIKE, IN, IS NULL), e.g. "
+                        "\"status = 'paid' AND created_at > '2026-01-01'\". "
+                        "OR, NOT, functions and subqueries are not accepted."
+                    ),
+                },
+                "columns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional list of columns to fetch instead of all",
                 },
             },
             "required": ["table"],

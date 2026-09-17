@@ -13,6 +13,7 @@ from fusion import __version__
 from fusion.adapters.inbound.rest.schemas import (
     AggregateRequest,
     CreateViewRequest,
+    LoadTableRequest,
     SearchRequest,
     SQLRequest,
 )
@@ -128,8 +129,14 @@ def register_routes(app: FastAPI, limiter: Limiter) -> None:
         return handle_result(fusion_of(request).tools.refresh_view(name))
 
     @app.post("/tables/{table:path}/load")
-    def load_table(request: Request, table: str) -> dict[str, Any]:
-        return handle_result(fusion_of(request).tools.load_table(table))
+    def load_table(
+        request: Request, table: str, body: LoadTableRequest | None = None
+    ) -> dict[str, Any]:
+        """Load a whole table, or the slice described by the optional body."""
+        spec = body or LoadTableRequest()
+        return handle_result(
+            fusion_of(request).tools.load_table(table, where=spec.where, columns=spec.columns)
+        )
 
     @app.get("/cache/stats")
     def cache_stats(request: Request) -> dict[str, Any]:
