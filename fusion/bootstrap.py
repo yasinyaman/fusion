@@ -20,7 +20,7 @@ from fusion.application.views import MaterializedViewService
 from fusion.domain.catalog import SchemaCatalog
 from fusion.ports.analytics_store import AnalyticsStore
 from fusion.ports.cache import QueryCache
-from fusion.ports.data_source import SourceFactory
+from fusion.ports.data_source import DatabaseDiscovery, SourceFactory
 from fusion.ports.scheduler import Scheduler
 from fusion.ports.sql_policy import SqlAnalyzer, SqlValidator
 
@@ -104,3 +104,10 @@ def build_app(
         backup=backup,
         tools=tools,
     )
+
+
+def default_discovery() -> DatabaseDiscovery:
+    """The Warp database-discovery adapter (used by the CLIs for --auto-discover)."""
+    from fusion.adapters.outbound.warp.discovery import WarpDiscovery
+
+    return WarpDiscovery()

@@ -110,6 +110,10 @@ def _aggregate(rows: list[dict[str, Any]], query: str) -> list[dict[str, Any]]:
 def run_mock_sql(query: str, db: Mapping[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
     """Execute a supported SQL statement against ``db`` and return records."""
     upper = query.upper().strip()
+    if re.search(r"\bJOIN\b", upper):
+        # The mock backend cannot join; behave like a gateway rejecting the
+        # query so Fusion falls back to loading the tables locally.
+        raise ValueError("mock Warp backend does not support JOIN")
     table = _find_table(query, db)
     if table is None:
         return [{"count": 0}] if "COUNT(*)" in upper else []
@@ -194,7 +198,10 @@ class FakeWarpTransport:
         self._maybe_fail()
         if "/query/execute" not in url:
             raise HttpTransportError(f"HTTP 404 from {url}", status=404)
-        return {"data": run_mock_sql(str(payload.get("query", "")), self.db)}
+        try:
+            return {"data": run_mock_sql(str(payload.get("query", "")), self.db)}
+        except ValueError as e:
+            raise HttpTransportError(f"HTTP 400 from {url}: {e}", status=400) from e
 
     def close(self) -> None:
         self.closed = True

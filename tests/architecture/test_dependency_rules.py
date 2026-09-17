@@ -21,7 +21,10 @@ RULES: dict[str, tuple[tuple[str, ...], bool]] = {
     "fusion.domain": (("fusion.domain",), False),
     "fusion.ports": (("fusion.domain", "fusion.ports"), False),
     "fusion.application": (("fusion.domain", "fusion.ports", "fusion.application"), False),
-    "fusion.observability": (("fusion.domain", "fusion.application"), False),
+    "fusion.observability": (
+        ("fusion.domain", "fusion.application", "fusion.observability"),
+        False,
+    ),
     "fusion.adapters.outbound": (
         ("fusion.domain", "fusion.ports", "fusion.adapters.outbound"),
         True,

@@ -1,86 +1,69 @@
-"""Shared pytest fixtures for Fusion tests."""
+"""Shared fixtures: a FusionApp on a real in-memory DuckDB with fake sources.
 
-import pandas as pd
+- ``app``           empty app, ManualScheduler, FakeSourceFactory
+- ``app_with_data`` ``test_db`` source (users/orders) fully loaded
+- ``app_lazy``      ``warp_main`` pushdown-capable source, metadata only
+- ``e2e_app``       real WarpSource over a FakeWarpTransport (mock Warp API)
+"""
+
 import pytest
 
-from fusion import OLAPEngine, QueryCache, SchemaCatalog, SQLGuardrails
+from fusion.adapters.outbound.warp.source import WarpSource
+from fusion.application.settings import Settings
+from fusion.bootstrap import build_app
+from tests.data import MOCK_DB, TEST_DB
+from tests.fakes import FakeSourceFactory, FakeWarpTransport, ManualScheduler
+
+WARP_URL = "http://localhost:8080"
 
 
 @pytest.fixture
-def engine():
-    """Fresh in-memory DuckDB engine for each test."""
-    e = OLAPEngine(database=":memory:", threads=2, memory_limit="512MB")
-    yield e
-    e.close()
+def scheduler():
+    return ManualScheduler()
 
 
 @pytest.fixture
-def engine_with_data(engine):
-    """Engine pre-loaded with sample data."""
-    users = pd.DataFrame(
-        {
-            "id": [1, 2, 3, 4, 5],
-            "name": ["Alice", "Bob", "Charlie", "Diana", "Eve"],
-            "segment": ["premium", "basic", "premium", "standard", "basic"],
-        }
-    )
-    orders = pd.DataFrame(
-        {
-            "id": [1, 2, 3, 4, 5, 6],
-            "user_id": [1, 2, 1, 3, 4, 5],
-            "amount": [100.0, 50.0, 200.0, 150.0, 75.0, 30.0],
-            "product": ["A", "B", "A", "C", "B", "A"],
-        }
-    )
-
-    engine.execute_raw("CREATE SCHEMA IF NOT EXISTS test_db")
-    # Use the engine's register-based loader so the fixture works under the
-    # default enable_external_access=FALSE latch (a plain `SELECT * FROM users`
-    # replacement scan would be rejected).
-    engine._materialize_dataframe("test_db.users", users)
-    engine._materialize_dataframe("test_db.orders", orders)
-
-    engine.catalog.register_source(
-        "test_db",
-        "test",
-        {
-            "users": {
-                "columns": [
-                    {"name": "id", "type": "int", "nullable": False},
-                    {"name": "name", "type": "varchar", "nullable": False},
-                    {"name": "segment", "type": "varchar", "nullable": True},
-                ],
-                "row_count": 5,
-            },
-            "orders": {
-                "columns": [
-                    {"name": "id", "type": "int", "nullable": False},
-                    {"name": "user_id", "type": "int", "nullable": False},
-                    {"name": "amount", "type": "double", "nullable": False},
-                    {"name": "product", "type": "varchar", "nullable": True},
-                ],
-                "row_count": 6,
-            },
-        },
-    )
-
-    # Mark tables as loaded (they were created directly above)
-    engine.catalog.mark_loaded("test_db.users")
-    engine.catalog.mark_loaded("test_db.orders")
-
-    return engine
+def factory():
+    return FakeSourceFactory()
 
 
 @pytest.fixture
-def guardrails():
-    return SQLGuardrails()
+def settings(tmp_path):
+    return Settings(threads=1, memory_limit="256MB", backup_path=str(tmp_path / "backups"))
 
 
 @pytest.fixture
-def cache():
-    return QueryCache(max_entries=10, default_ttl=60)
+def app(settings, scheduler, factory):
+    a = build_app(settings, scheduler=scheduler, source_factory=factory)
+    yield a
+    a.close()
 
 
 @pytest.fixture
-def catalog():
-    return SchemaCatalog()
+def app_with_data(app):
+    app.sources.connect("test_db", {"type": "fake", "tables": TEST_DB}, fetch_all=True)
+    return app
+
+
+@pytest.fixture
+def app_lazy(app):
+    app.sources.connect("warp_main", {"type": "fake", "tables": TEST_DB, "pushdown": True})
+    return app
+
+
+@pytest.fixture
+def e2e_transport():
+    return FakeWarpTransport(MOCK_DB, database="ecommerce")
+
+
+@pytest.fixture
+def e2e_app(settings, scheduler, e2e_transport):
+    """Full stack: FakeWarpTransport -> WarpSource -> FusionApp (lazy, nothing loaded)."""
+
+    def factory(name, config):
+        return WarpSource.from_config(name, {**config, "transport": e2e_transport})
+
+    a = build_app(settings, scheduler=scheduler, source_factory=factory)
+    a.sources.connect("ecommerce", {"type": "warp", "base_url": WARP_URL, "database": "ecommerce"})
+    yield a
+    a.close()

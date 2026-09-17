@@ -632,11 +632,9 @@ name = "fusion"
 source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
-    { name = "pandas" },
     { name = "pyarrow" },
     { name = "requests" },
     { name = "sqlglot" },
-    { name = "tabulate" },
 ]
 
 [package.optional-dependencies]
@@ -693,7 +691,6 @@ requires-dist = [
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=2.3,<3" },
     { name = "numpy", marker = "extra == 'all'", specifier = ">=2.5,<3" },
     { name = "numpy", marker = "extra == 'demo'", specifier = ">=2.5,<3" },
-    { name = "pandas", specifier = ">=3.0,<4" },
     { name = "pandas", marker = "extra == 'all'", specifier = ">=3.0,<4" },
     { name = "pandas", marker = "extra == 'demo'", specifier = ">=3.0,<4" },
     { name = "pandas", marker = "extra == 'pandas'", specifier = ">=3.0,<4" },
@@ -712,7 +709,6 @@ requires-dist = [
     { name = "slowapi", marker = "extra == 'all'", specifier = ">=0.1.10,<0.2" },
     { name = "slowapi", marker = "extra == 'rest'", specifier = ">=0.1.10,<0.2" },
     { name = "sqlglot", specifier = ">=30.0,<31" },
-    { name = "tabulate", specifier = ">=0.9,<1" },
     { name = "uvicorn", marker = "extra == 'all'", specifier = ">=0.53,<1.0" },
     { name = "uvicorn", marker = "extra == 'rest'", specifier = ">=0.53,<1.0" },
 ]
@@ -1952,15 +1948,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b5/b4/205b0d5241d934e8add0c38aa924c4f9fb7330834ff11e5444db964ec3f9/starlette-1.6.0.tar.gz", hash = "sha256:d4e3ac5e546444960c710297a3c9fc3f7ebae1b7e963f3d36173b49da535be9b", size = 2716969, upload-time = "2026-08-08T18:27:57.512Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c8/cb/6a6a47d5b464bd08695d254f3da6e7986cc70c9fa5d778eda57538edfe56/starlette-1.6.0-py3-none-any.whl", hash = "sha256:a86dd39d14bb45f85a3d18525215a9ef0cfd1f192ac793220e72598c90335f0c", size = 75969, upload-time = "2026-08-08T18:27:56.196Z" },
-]
-
-[[package]]
-name = "tabulate"
-version = "0.10.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/46/58/8c37dea7bbf769b20d58e7ace7e5edfe65b849442b00ffcdd56be88697c6/tabulate-0.10.0.tar.gz", hash = "sha256:e2cfde8f79420f6deeffdeda9aaec3b6bc5abce947655d17ac662b126e48a60d", size = 91754, upload-time = "2026-03-04T18:55:34.402Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/99/55/db07de81b5c630da5cbf5c7df646580ca26dfaefa593667fc6f2fe016d2e/tabulate-0.10.0-py3-none-any.whl", hash = "sha256:f0b0622e567335c8fabaaa659f1b33bcb6ddfe2e496071b743aa113f8774f2d3", size = 39814, upload-time = "2026-03-04T18:55:31.284Z" },
 ]
 
 [[package]]

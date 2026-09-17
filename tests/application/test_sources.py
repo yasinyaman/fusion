@@ -4,7 +4,7 @@ import pytest
 
 from fusion.domain.errors import ConnectionError
 from fusion.domain.models import TableRef
-from tests.application.conftest import ORDERS, TEST_DB, USERS
+from tests.data import ORDERS, TEST_DB, USERS
 
 
 class TestConnect:
