@@ -110,3 +110,22 @@ class TestScheduledRefresh:
         app_with_data.views.create("crit", "SELECT 1", priority="critical")
         app_with_data.views.refresh_all()
         assert {v["name"] for v in app_with_data.views.list_views()} == {"low", "crit"}
+
+
+class TestCacheInvalidation:
+    def test_creating_a_view_clears_the_cache(self, app_with_data):
+        sql = "SELECT COUNT(*) AS n FROM test_db.orders"
+        app_with_data.query.sql(sql)
+        assert app_with_data.query.sql(sql).from_cache is True
+        app_with_data.views.create(
+            "totals", "SELECT product, SUM(amount) AS t FROM test_db.orders GROUP BY product"
+        )
+        assert app_with_data.query.sql(sql).from_cache is False
+
+    def test_refreshing_a_view_clears_the_cache(self, app_with_data):
+        app_with_data.views.create("v", "SELECT COUNT(*) AS n FROM test_db.users")
+        sql = "SELECT * FROM mv_v"
+        assert app_with_data.query.sql(sql).from_cache is False
+        assert app_with_data.query.sql(sql).from_cache is True
+        app_with_data.views.refresh("v")
+        assert app_with_data.query.sql(sql).from_cache is False

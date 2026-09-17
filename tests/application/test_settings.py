@@ -1,6 +1,9 @@
 """Tests for Settings."""
 
+import json
+
 from fusion.application.settings import Settings
+from fusion.domain.models import RefreshSpec
 
 
 class TestFromEnv:
@@ -130,3 +133,39 @@ class TestMaterializationPolicy:
             "semi_join_max_keys": 40,
             "in_chunk_size": 50,
         }
+
+
+class TestRefreshConfig:
+    def test_no_config_means_no_incremental_tables(self):
+        assert Settings().refresh_specs() == {}
+        assert Settings(refresh_config="   ").refresh_specs() == {}
+
+    def test_parses_watermark_and_keys(self):
+        s = Settings(
+            refresh_config=json.dumps(
+                {
+                    "db.orders": {"watermark_column": "updated_at", "key_columns": ["id"]},
+                    "db.events": {"watermark_column": "id"},
+                }
+            )
+        )
+        specs = s.refresh_specs()
+        assert specs["db.orders"] == RefreshSpec("updated_at", ("id",))
+        assert specs["db.events"] == RefreshSpec("id", ())
+        assert specs["db.events"].is_incremental
+
+    def test_a_single_key_column_may_be_a_string(self):
+        s = Settings(
+            refresh_config=json.dumps({"a.b": {"watermark_column": "t", "key_columns": "id"}})
+        )
+        assert s.refresh_specs()["a.b"].key_columns == ("id",)
+
+    def test_broken_json_is_ignored_not_fatal(self, caplog):
+        assert Settings(refresh_config="{not json").refresh_specs() == {}
+        assert Settings(refresh_config='"a string"').refresh_specs() == {}
+
+    def test_a_non_object_entry_is_skipped(self):
+        s = Settings(
+            refresh_config=json.dumps({"a.b": "updated_at", "c.d": {"watermark_column": "t"}})
+        )
+        assert list(s.refresh_specs()) == ["c.d"]

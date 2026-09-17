@@ -272,7 +272,13 @@ class DuckDBStore:
         if not self._table_exists(table_name):
             return self.materialize_stream(table_name, stream)
         staging = f"{table_name}__stage"
-        count = self.materialize_stream(staging, stream)
+        # Stage with the target's own columns, so an empty batch still lands
+        # as a table the delete/insert below can talk about.
+        schema = TableSchema(columns=self.describe(table_name))
+        count = self.materialize_stream(staging, stream, schema)
+        if count == 0:
+            self.drop_table(staging)
+            return 0
         target = _quote_qualified(table_name)
         stage = _quote_qualified(staging)
         try:

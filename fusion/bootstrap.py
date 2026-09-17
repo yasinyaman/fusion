@@ -81,9 +81,15 @@ def build_app(
         scheduler=scheduler,
         policy=policy,
         clock=clock,
+        refresh_config=settings.refresh_specs(),
+        # Refreshed data and rebuilt views change what a query returns, so
+        # anything cached from before must go.
+        on_data_changed=cache.clear,
     )
     query = QueryService(validator, analyzer, planner, cache, store, sources)
-    views = MaterializedViewService(store, validator, planner, sources, scheduler, clock)
+    views = MaterializedViewService(
+        store, validator, planner, sources, scheduler, clock, on_data_changed=cache.clear
+    )
     backup = BackupService(
         store,
         settings.backup_path,

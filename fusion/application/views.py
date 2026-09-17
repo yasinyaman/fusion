@@ -29,6 +29,7 @@ class MaterializedViewService:
         sources: SourceService,
         scheduler: Scheduler | None = None,
         clock: Callable[[], float] = time.time,
+        on_data_changed: Callable[[], None] | None = None,
     ) -> None:
         self._store = store
         self._validator = validator
@@ -36,6 +37,7 @@ class MaterializedViewService:
         self._sources = sources
         self._scheduler = scheduler
         self._clock = clock
+        self._on_data_changed = on_data_changed
         self._views: dict[str, ViewSpec] = {}
         self._jobs: dict[str, ScheduledJob] = {}
 
@@ -71,6 +73,10 @@ class MaterializedViewService:
         if not plan.is_empty():
             self._sources.ensure_loaded(plan.targets)
         self._store.create_table_as(spec.table_name, spec.sql)
+        # The view's table is new or different now, so any cached result that
+        # read it is stale.
+        if self._on_data_changed is not None:
+            self._on_data_changed()
 
     def refresh(self, name: str, force: bool = False) -> None:
         spec = self.get(name)

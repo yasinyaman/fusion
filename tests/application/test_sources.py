@@ -1,9 +1,12 @@
 """Tests for SourceService."""
 
+import json
+from dataclasses import replace
+
 import pytest
 
 from fusion.domain.errors import ConnectionError, QueryError
-from fusion.domain.models import RowSet, TableRef
+from fusion.domain.models import RefreshSpec, RowSet, TableRef
 from fusion.domain.policy import TargetPlan
 from fusion.domain.slices import Predicate, SliceSpec
 from tests.data import ORDERS, TEST_DB, USERS
@@ -282,3 +285,155 @@ class TestSlices:
         loaded = sliced.catalog.slices_of("db.users")[0]
         assert loaded.complete is False
         assert not sliced.catalog.is_loaded("db.users")  # never answers a narrower query
+
+
+ORDERS_V2 = [
+    {"id": 1, "user_id": 1, "amount": 100.0, "product": "A", "updated_at": 10},
+    {"id": 2, "user_id": 2, "amount": 50.0, "product": "B", "updated_at": 20},
+]
+
+
+class TestIncrementalRefresh:
+    """A watermarked table is topped up instead of re-fetched."""
+
+    @pytest.fixture
+    def app(self, settings, scheduler, factory):
+        from fusion.bootstrap import build_app
+
+        a = build_app(
+            replace(
+                settings,
+                refresh_config=json.dumps(
+                    {"db.orders": {"watermark_column": "updated_at", "key_columns": ["id"]}}
+                ),
+            ),
+            scheduler=scheduler,
+            source_factory=factory,
+        )
+        a.sources.connect("db", {"type": "fake", "tables": {"orders": ORDERS_V2}})
+        a.sources.ensure_loaded(["db.orders"])
+        yield a
+        a.close()
+
+    def _rows(self, app):
+        return app.store.execute("SELECT id, amount FROM db.orders ORDER BY id").rows
+
+    def test_only_rows_above_the_watermark_are_fetched(self, app, factory):
+        factory.sources["db"].set_table(
+            "orders", [*ORDERS_V2, {"id": 3, "user_id": 3, "amount": 7.0, "updated_at": 30}]
+        )
+        app.sources.refresh_all()
+        assert self._rows(app) == [(1, 100.0), (2, 50.0), (3, 7.0)]
+        fetches = [c for c in factory.sources["db"].calls_named("fetch_slice") if c[1] == "orders"]
+        assert fetches[-1][2].predicates == (Predicate("updated_at", "gt", 20),)
+
+    def test_an_updated_row_replaces_its_old_copy(self, app, factory):
+        factory.sources["db"].set_table(
+            "orders",
+            [
+                {"id": 1, "user_id": 1, "amount": 999.0, "product": "A", "updated_at": 40},
+                *ORDERS_V2[1:],
+            ],
+        )
+        app.sources.refresh_all()
+        assert self._rows(app) == [(1, 999.0), (2, 50.0)]
+        assert app.catalog.get_table("db.orders").row_count == 2
+
+    def test_without_key_columns_new_rows_are_appended(self, settings, scheduler, factory):
+        from fusion.bootstrap import build_app
+
+        app = build_app(
+            replace(
+                settings,
+                refresh_config=json.dumps({"db.orders": {"watermark_column": "updated_at"}}),
+            ),
+            scheduler=scheduler,
+            source_factory=factory,
+        )
+        try:
+            app.sources.connect("db", {"type": "fake", "tables": {"orders": ORDERS_V2}})
+            app.sources.ensure_loaded(["db.orders"])
+            factory.sources["db"].set_table(
+                "orders", [*ORDERS_V2, {"id": 3, "user_id": 3, "amount": 7.0, "updated_at": 30}]
+            )
+            app.sources.refresh_all()
+            assert app.store.count("db.orders") == 3
+        finally:
+            app.close()
+
+    def test_nothing_new_means_nothing_changes(self, app, factory):
+        app.sources.refresh_all()
+        assert self._rows(app) == [(1, 100.0), (2, 50.0)]
+
+    def test_a_table_without_a_watermark_is_refetched_whole(self, app, factory):
+        app.sources.connect("other", {"type": "fake", "tables": {"users": USERS}})
+        app.sources.ensure_loaded(["other.users"])
+        factory.sources["other"].set_table("users", [{"id": 1, "name": "Solo", "segment": "x"}])
+        app.sources.refresh_all()
+        assert app.store.count("other.users") == 1
+        specs = [c[2] for c in factory.sources["other"].calls_named("fetch_slice")]
+        assert specs[-1].is_full
+
+    def test_partial_slices_are_dropped_rather_than_refreshed(self, app):
+        target = TargetPlan(
+            TableRef("db", "orders"),
+            SliceSpec(predicates=(Predicate("amount", "gt", 60),)),
+            "load_slice",
+        )
+        table = app.sources.ensure_slices([target])[TableRef("db", "orders")]
+        assert app.store.count(table) == 1
+        app.sources.refresh_all()
+        remaining = app.catalog.slices_of("db.orders")
+        assert [s.table_name for s in remaining] == ["db.orders"]
+        assert remaining[0].is_full
+        with pytest.raises(QueryError):
+            app.store.count(table)
+
+    def test_a_refresh_clears_the_cache(self, app, factory):
+        sql = "SELECT COUNT(*) AS n FROM db.orders"
+        assert app.query.sql(sql).rows == [(2,)]
+        assert app.query.sql(sql).from_cache is True
+        factory.sources["db"].set_table(
+            "orders", [*ORDERS_V2, {"id": 3, "user_id": 3, "amount": 7.0, "updated_at": 30}]
+        )
+        app.sources.refresh_all()
+        result = app.query.sql(sql)
+        assert result.from_cache is False and result.rows == [(3,)]
+
+    def test_a_refresh_that_changes_nothing_leaves_the_cache_alone(self, app):
+        app.sources.connect("empty", {"type": "fake", "tables": {}})
+        app.query.sql("SELECT 1 AS x")
+        app.cache.clear()
+        app.query.sql("SELECT 1 AS x")
+        assert app.query.sql("SELECT 1 AS x").from_cache is True
+
+    def test_an_invalid_watermark_column_is_refused(self, settings, scheduler, factory):
+        from fusion.bootstrap import build_app
+
+        app = build_app(
+            replace(
+                settings,
+                refresh_config=json.dumps({"db.orders": {"watermark_column": "a; DROP TABLE t"}}),
+            ),
+            scheduler=scheduler,
+            source_factory=factory,
+        )
+        try:
+            app.sources.connect("db", {"type": "fake", "tables": {"orders": ORDERS_V2}})
+            app.sources.ensure_loaded(["db.orders"])
+            with pytest.raises(QueryError, match="watermark"):
+                app.sources.refresh_all(force=True)
+        finally:
+            app.close()
+
+    def test_source_config_can_carry_the_refresh_spec(self, app, factory):
+        app.sources.connect(
+            "cfg",
+            {
+                "type": "fake",
+                "tables": {"orders": ORDERS_V2},
+                "refresh": {"orders": {"watermark_column": "updated_at", "key_columns": ["id"]}},
+            },
+        )
+        assert app.sources.refresh_spec("cfg.orders") == RefreshSpec("updated_at", ("id",))
+        assert app.sources.refresh_spec("cfg.nope") is None

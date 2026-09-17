@@ -11,9 +11,9 @@ from fusion.application.semijoin import SemiJoinExecutor
 from fusion.domain.catalog import SchemaCatalog
 from fusion.domain.errors import ConnectionError, QueryError
 from fusion.domain.identifiers import IDENTIFIER_RE
-from fusion.domain.models import TableRef, TableSchema, coerce_ref
+from fusion.domain.models import RefreshSpec, TableRef, TableSchema, coerce_ref
 from fusion.domain.policy import MaterializationPolicy, TargetPlan
-from fusion.domain.slices import LoadedSlice, SliceSpec
+from fusion.domain.slices import LoadedSlice, Predicate, SliceSpec
 from fusion.ports.analytics_store import AnalyticsStore
 from fusion.ports.data_source import DataSource, PushdownCapable, SourceFactory
 from fusion.ports.scheduler import ScheduledJob, Scheduler
@@ -21,6 +21,10 @@ from fusion.ports.scheduler import ScheduledJob, Scheduler
 logger = logging.getLogger(__name__)
 
 STAGING_SUFFIX = "__tmp"
+
+
+def _quote(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
 
 
 class SourceService:
@@ -35,6 +39,8 @@ class SourceService:
         scheduler: Scheduler | None = None,
         policy: MaterializationPolicy | None = None,
         clock: Callable[[], float] = time.time,
+        refresh_config: Mapping[str, RefreshSpec] | None = None,
+        on_data_changed: Callable[[], None] | None = None,
     ) -> None:
         self._catalog = catalog
         self._store = store
@@ -46,6 +52,8 @@ class SourceService:
         self._semi_join_executor = SemiJoinExecutor(
             store, catalog, self._policy, clock, max_ingest_rows
         )
+        self._refresh_specs: dict[str, RefreshSpec] = dict(refresh_config or {})
+        self._on_data_changed = on_data_changed
         self._sources: dict[str, DataSource] = {}
         self._auto_refresh: ScheduledJob | None = None
 
@@ -64,6 +72,7 @@ class SourceService:
 
         source = self._factory(name, config)
         source.connect()
+        self._register_refresh_specs(name, config)
 
         self._store.create_schema(name)
         schema = source.discover_schema()
@@ -73,6 +82,28 @@ class SourceService:
 
         if fetch_all:
             self.ensure_loaded(TableRef(name, table) for table in schema)
+
+    def _register_refresh_specs(self, name: str, config: Mapping[str, Any]) -> None:
+        """Pick up per-table refresh hints from a source's own config.
+
+        ``{"refresh": {"orders": {"watermark_column": "updated_at",
+        "key_columns": ["id"]}}}``. Settings-level entries win, since they
+        are what an operator set for this deployment.
+        """
+        from fusion.application.settings import refresh_spec_from
+
+        tables = config.get("refresh")
+        if not isinstance(tables, Mapping):
+            return
+        for table, raw in tables.items():
+            spec = refresh_spec_from(raw)
+            full_name = f"{name}.{table}"
+            if spec is not None and spec.is_incremental and full_name not in self._refresh_specs:
+                self._refresh_specs[full_name] = spec
+
+    def refresh_spec(self, ref: TableRef | str) -> RefreshSpec | None:
+        """How this table is refreshed, when it was configured for it."""
+        return self._refresh_specs.get(coerce_ref(ref).full_name)
 
     def disconnect(self, name: str) -> None:
         source = self._sources.pop(name, None)
@@ -267,23 +298,101 @@ class SourceService:
     # -- refresh ------------------------------------------------------------
 
     def refresh_all(self, force: bool = False) -> None:
-        """Re-discover schemas and re-fetch tables that are already loaded."""
+        """Bring loaded data up to date and re-read every schema.
+
+        A table with a configured watermark is topped up (only rows newer
+        than the highest value already loaded); anything else that is fully
+        loaded is re-fetched. Slices that are partial, derived or truncated
+        are dropped rather than refreshed: what they hold depends on a query
+        that may never be asked again.
+        """
+        changed = False
         for name, source in list(self._sources.items()):
             try:
-                schema = source.discover_schema()
-                reloaded: dict[str, int] = {}
-                for table in schema:
-                    ref = TableRef(name, table)
-                    if self._catalog.is_loaded(ref):
-                        reloaded[table] = self._materialize(ref, SliceSpec.FULL, source).row_count
-                self._catalog.register_source(name, source.source_type, schema)
-                for table, count in reloaded.items():
-                    schema[table].row_count = count
+                changed |= self._refresh_source(name, source)
                 logger.info("Refreshed source: %s", name)
             except Exception as e:
                 logger.error("Failed to refresh source %s: %s", name, e)
                 if force:
                     raise
+        if changed:
+            self._data_changed()
+
+    def _refresh_source(self, name: str, source: DataSource) -> bool:
+        schema = source.discover_schema()
+        changed = False
+        counts: dict[str, int] = {}
+        for table in schema:
+            ref = TableRef(name, table)
+            if not self._catalog.is_loaded(ref):
+                continue
+            spec = self._refresh_specs.get(ref.full_name)
+            if spec is not None and spec.is_incremental:
+                counts[table] = self._refresh_incrementally(ref, source, spec)
+            else:
+                counts[table] = self._materialize(ref, SliceSpec.FULL, source).row_count
+            changed = True
+        changed |= self._drop_stale_slices(name)
+        self._catalog.register_source(name, source.source_type, schema)
+        for table, count in counts.items():
+            schema[table].row_count = count
+        return changed
+
+    def _drop_stale_slices(self, name: str) -> bool:
+        """Discard slices a refresh cannot bring up to date."""
+        dropped = False
+        for loaded in self._catalog.all_slices():
+            if loaded.ref.source != name:
+                continue
+            if loaded.is_full and loaded.complete:
+                continue
+            self.evict_slice(loaded.table_name)
+            dropped = True
+        return dropped
+
+    def _refresh_incrementally(self, ref: TableRef, source: DataSource, spec: RefreshSpec) -> int:
+        """Fetch only rows above the highest watermark already in the store."""
+        table_name = ref.full_name
+        watermark = self._highest(table_name, spec.watermark_column)
+        if watermark is None:
+            return self._materialize(ref, SliceSpec.FULL, source).row_count
+        slice_spec = SliceSpec(predicates=(Predicate(spec.watermark_column, "gt", watermark),))
+        stream = source.fetch_slice(ref.table, slice_spec, max_rows=self._max_ingest_rows or None)
+        if spec.key_columns:
+            # A row can be updated as well as added, so replace by key
+            # instead of appending a second copy of it.
+            added = self._store.upsert(table_name, stream, spec.key_columns)
+        else:
+            added = self._store.append_stream(table_name, stream)
+        count = self._store.count(table_name)
+        loaded = self._catalog.slices.get(table_name)
+        if loaded is not None:
+            loaded.row_count = count
+            loaded.last_used = self._clock()
+            loaded.watermark = self._highest(table_name, spec.watermark_column)
+        if self._catalog.has_table(ref):
+            self._catalog.set_row_count(ref, count)
+        logger.info(
+            "Refreshed %s incrementally: %d row(s) after %s > %r",
+            ref.full_name,
+            added,
+            spec.watermark_column,
+            watermark,
+        )
+        return count
+
+    def _highest(self, table_name: str, column: str) -> Any:
+        """The largest value of ``column`` currently in the store, or None."""
+        if not IDENTIFIER_RE.match(column):
+            raise QueryError(f"Invalid watermark column '{column}'")
+        table = ".".join(_quote(part) for part in table_name.split(".", 1))
+        rows = self._store.execute(f"SELECT MAX({_quote(column)}) FROM {table}")
+        return rows.rows[0][0] if rows.rows else None
+
+    def _data_changed(self) -> None:
+        """Tell the rest of the application that stored data moved."""
+        if self._on_data_changed is not None:
+            self._on_data_changed()
 
     def start_auto_refresh(self, interval: int = 300) -> None:
         if self._scheduler is None:

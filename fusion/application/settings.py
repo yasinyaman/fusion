@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from fusion.domain.models import RefreshSpec
 from fusion.domain.policy import MaterializationPolicy
+
+logger = logging.getLogger(__name__)
 
 # API keys that must never be accepted in production (placeholders/examples).
 PLACEHOLDER_API_KEYS = frozenset(
@@ -69,6 +74,13 @@ class Settings:
     semi_join_max_keys: int = 50_000
     in_chunk_size: int = 1_000
 
+    # How each table is refreshed, as JSON:
+    # {"ecommerce.orders": {"watermark_column": "updated_at",
+    #                       "key_columns": ["id"]}}
+    # A table listed here is refreshed incrementally (only rows above the
+    # highest watermark already loaded); everything else is re-fetched whole.
+    refresh_config: str = ""
+
     # Cache
     cache_ttl: int = 300
     cache_max_entries: int = 500
@@ -127,6 +139,7 @@ class Settings:
             slice_budget_rows=int(get("FUSION_SLICE_BUDGET_ROWS", "2000000")),
             semi_join_max_keys=int(get("FUSION_SEMI_JOIN_MAX_KEYS", "50000")),
             in_chunk_size=int(get("FUSION_IN_CHUNK_SIZE", "1000")),
+            refresh_config=get("FUSION_REFRESH_CONFIG", ""),
             cache_ttl=int(get("FUSION_CACHE_TTL", "300")),
             cache_max_entries=int(get("FUSION_CACHE_MAX_ENTRIES", "500")),
             api_key=get("FUSION_API_KEY", ""),
@@ -173,6 +186,31 @@ class Settings:
             in_chunk_size=self.in_chunk_size,
         )
 
+    def refresh_specs(self) -> dict[str, RefreshSpec]:
+        """Per-table incremental refresh settings, keyed by ``source.table``.
+
+        A malformed value is logged and ignored: a bad refresh hint must not
+        stop the engine from starting.
+        """
+        if not self.refresh_config.strip():
+            return {}
+        try:
+            parsed = json.loads(self.refresh_config)
+        except ValueError as e:
+            logger.error("FUSION_REFRESH_CONFIG is not valid JSON, ignoring it: %s", e)
+            return {}
+        if not isinstance(parsed, dict):
+            logger.error("FUSION_REFRESH_CONFIG must be a JSON object, ignoring it")
+            return {}
+        specs: dict[str, RefreshSpec] = {}
+        for name, raw in parsed.items():
+            spec = refresh_spec_from(raw)
+            if spec is None:
+                logger.error("Ignoring refresh config for '%s': expected an object", name)
+                continue
+            specs[str(name)] = spec
+        return specs
+
     def warp_http_defaults(self) -> dict[str, Any]:
         """Auth/resilience/timeout defaults merged under every Warp source config."""
         return {
@@ -207,3 +245,16 @@ class Settings:
                     "Specify explicit allowed origins."
                 )
         return errors
+
+
+def refresh_spec_from(raw: Any) -> RefreshSpec | None:
+    """Build a RefreshSpec from a config mapping (None when it is not one)."""
+    if not isinstance(raw, Mapping):
+        return None
+    keys = raw.get("key_columns") or ()
+    if isinstance(keys, str):
+        keys = [keys]
+    return RefreshSpec(
+        watermark_column=str(raw.get("watermark_column", "") or ""),
+        key_columns=tuple(str(k) for k in keys),
+    )

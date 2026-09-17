@@ -401,3 +401,36 @@ class TestSemiJoinOverWarp:
         exported = [p for m, u, p in big_transport.requests if u.endswith("/orders/export")]
         assert exported, "the big table was never exported"
         assert "filter[user_id][in]" in exported[-1]
+
+
+class TestIncrementalRefreshOverWarp:
+    """A watermarked table is topped up through the export endpoint."""
+
+    def test_only_new_rows_are_exported(self, settings, scheduler):
+        from tests.conftest import _e2e_app
+
+        transport = FakeWarpTransport(
+            {**MOCK_DB, "events": [{"id": 1, "kind": "a"}, {"id": 2, "kind": "b"}]},
+            database="ecommerce",
+            raw_query=False,
+        )
+        app = _e2e_app(
+            replace(
+                settings,
+                refresh_config='{"ecommerce.events": {"watermark_column": "id", '
+                '"key_columns": ["id"]}}',
+            ),
+            scheduler,
+            transport,
+        )
+        try:
+            app.sources.ensure_loaded(["ecommerce.events"])
+            assert app.query.sql("SELECT COUNT(*) AS n FROM ecommerce.events").rows == [(2,)]
+            transport.db["events"].append({"id": 3, "kind": "c"})
+            app.sources.refresh_all()
+            exported = [p for m, u, p in transport.requests if u.endswith("/events/export")]
+            assert exported[-1]["filter[id][gt]"] == "2"
+            result = app.query.sql("SELECT COUNT(*) AS n FROM ecommerce.events")
+            assert result.rows == [(3,)] and result.from_cache is False
+        finally:
+            app.close()
