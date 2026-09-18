@@ -1,6 +1,9 @@
 """Tests for Settings."""
 
+import json
+
 from fusion.application.settings import Settings
+from fusion.domain.models import RefreshSpec
 
 
 class TestFromEnv:
@@ -25,10 +28,14 @@ class TestFromEnv:
                 "FUSION_CORS_ORIGINS": "https://a.com, https://b.com",
                 "FUSION_LOG_LEVEL": "debug",
                 "WARP_TIMEOUT": "12.5",
+                "WARP_API_KEY": "warp-k",
+                "FUSION_WARP_API_KEY_HEADER": " X-Warp-Key ",
                 "FUSION_BACKUP_ENABLED": "true",
                 "FUSION_API_KEY": "k",
             }
         )
+        assert s.warp_api_key == "warp-k"
+        assert s.warp_api_key_header == "X-Warp-Key"
         assert s.is_production()
         assert s.port == 8080
         assert s.threads == 8
@@ -91,3 +98,74 @@ def test_warp_http_defaults():
     assert d["max_retries"] == 1
     assert d["pool_size"] == 2
     assert d["circuit_breaker_threshold"] == 9
+    assert d["api_key"] is None  # empty key -> no auth header
+    assert d["api_key_header"] == "X-API-Key"
+    assert Settings(warp_api_key="k").warp_http_defaults()["api_key"] == "k"
+    assert Settings.from_env({}).warp_api_key_header == "X-API-Key"
+    assert Settings.from_env({"FUSION_WARP_API_KEY_HEADER": "  "}).warp_api_key_header == (
+        "X-API-Key"
+    )
+
+
+class TestMaterializationPolicy:
+    def test_defaults(self):
+        policy = Settings().policy()
+        assert policy.full_load_max_rows == 500_000
+        assert policy.slice_max_rows == 500_000
+        assert policy.slice_budget_rows == 2_000_000
+        assert policy.semi_join_max_keys == 50_000
+        assert policy.in_chunk_size == 1_000
+
+    def test_read_from_the_environment(self):
+        s = Settings.from_env(
+            {
+                "FUSION_FULL_LOAD_MAX_ROWS": "10",
+                "FUSION_SLICE_MAX_ROWS": "20",
+                "FUSION_SLICE_BUDGET_ROWS": "30",
+                "FUSION_SEMI_JOIN_MAX_KEYS": "40",
+                "FUSION_IN_CHUNK_SIZE": "50",
+            }
+        )
+        assert s.policy().as_dict() == {
+            "full_load_max_rows": 10,
+            "slice_max_rows": 20,
+            "slice_budget_rows": 30,
+            "semi_join_max_keys": 40,
+            "in_chunk_size": 50,
+        }
+
+
+class TestRefreshConfig:
+    def test_no_config_means_no_incremental_tables(self):
+        assert Settings().refresh_specs() == {}
+        assert Settings(refresh_config="   ").refresh_specs() == {}
+
+    def test_parses_watermark_and_keys(self):
+        s = Settings(
+            refresh_config=json.dumps(
+                {
+                    "db.orders": {"watermark_column": "updated_at", "key_columns": ["id"]},
+                    "db.events": {"watermark_column": "id"},
+                }
+            )
+        )
+        specs = s.refresh_specs()
+        assert specs["db.orders"] == RefreshSpec("updated_at", ("id",))
+        assert specs["db.events"] == RefreshSpec("id", ())
+        assert specs["db.events"].is_incremental
+
+    def test_a_single_key_column_may_be_a_string(self):
+        s = Settings(
+            refresh_config=json.dumps({"a.b": {"watermark_column": "t", "key_columns": "id"}})
+        )
+        assert s.refresh_specs()["a.b"].key_columns == ("id",)
+
+    def test_broken_json_is_ignored_not_fatal(self, caplog):
+        assert Settings(refresh_config="{not json").refresh_specs() == {}
+        assert Settings(refresh_config='"a string"').refresh_specs() == {}
+
+    def test_a_non_object_entry_is_skipped(self):
+        s = Settings(
+            refresh_config=json.dumps({"a.b": "updated_at", "c.d": {"watermark_column": "t"}})
+        )
+        assert list(s.refresh_specs()) == ["c.d"]

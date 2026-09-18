@@ -9,6 +9,7 @@ Fusion connects to PostgreSQL/MySQL databases through the [Warp](https://github.
 - **10 LLM tools** — `list_sources`, `describe_table`, `query_data`, `search_data`, `aggregate_data`, `create_view`, `list_views`, `refresh_view`, `load_table`, `cache_stats`
 - **Three access layers** — MCP server (stdio), REST API (FastAPI), Python SDK; tool definitions in OpenAI function-calling and MCP formats
 - **Lazy loading** — connecting a source fetches metadata only; tables are pulled on first use
+- **Smart transfer** — a table too big for memory is read one slice at a time: only the columns and rows a query touches, streamed as Arrow, reused by later queries, and refused with concrete advice when even that is too much
 - **Query pushdown** — single-source queries on unloaded tables run on the source database
 - **Cross-source federation** — JOIN PostgreSQL and MySQL tables in one DuckDB query
 - **SQL guardrails** — only read-only queries (SELECT, CTEs, UNION/INTERSECT/EXCEPT) reach DuckDB; file/network functions are denied and DuckDB's external access is latched off
@@ -143,7 +144,7 @@ result = app.tools.execute("query_data", {"sql": "SELECT ..."})   # when the mod
 
 | Tool | Description |
 |------|-------------|
-| `list_sources` | Connected sources and tables with row counts and load state |
+| `list_sources` | Connected sources and tables with row counts, source-side estimates, load state and loaded slices |
 | `describe_table` | Table schema (columns, types, row count) |
 | `query_data` | Run analytical SQL on DuckDB (read-only, max 100 rows) |
 | `search_data` | Filter search (exact match or LIKE with %) |
@@ -151,10 +152,43 @@ result = app.tools.execute("query_data", {"sql": "SELECT ..."})   # when the mod
 | `create_view` | Create a materialized view from a SELECT query |
 | `list_views` | List materialized views with refresh schedule |
 | `refresh_view` | Manually refresh a materialized view |
-| `load_table` | Explicitly load a table from its source into DuckDB |
+| `load_table` | Load a table, or just the slice `where` / `columns` describe |
 | `cache_stats` | Query cache hit rate and entry count |
 
 Every tool returns a JSON-serializable dict; failures come back as `{"error": "..."}`.
+
+## Working with tables larger than memory
+
+Fusion is an in-memory engine, so it will not load a table it cannot hold.
+Instead of guessing, it reads what a query actually needs:
+
+```python
+# Only the matching rows and columns travel; the slice stays for later queries.
+app.query.sql("SELECT id, total FROM shop.orders WHERE status = 'paid'")
+
+# Or load a slice explicitly
+app.tools.load_table("shop.orders", where="status = 'paid'", columns=["id", "total"])
+```
+
+A query with nothing to narrow a big table by is refused, with its estimated
+size and the ways forward (add a WHERE, select fewer columns, join it to a
+small table on an equality key, or raise the limit). A join between a huge
+table and a small one fetches only the rows whose key appears in the small
+one.
+
+Slicing needs a source that can filter; Warp does. With Warp >= 0.10 the
+rows arrive as an Arrow IPC stream with their real types, and table sizes
+come from `GET /schema` without counting rows. Against Warp 0.9 everything
+still works through the paged list endpoint.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `FUSION_FULL_LOAD_MAX_ROWS` | `500000` | Largest table loaded whole when a query has no usable filter |
+| `FUSION_SLICE_MAX_ROWS` | `500000` | Largest single slice |
+| `FUSION_SLICE_BUDGET_ROWS` | `2000000` | Rows kept across all slices before the least used are evicted |
+| `FUSION_SEMI_JOIN_MAX_KEYS` | `50000` | Most join keys passed to the source |
+| `FUSION_IN_CHUNK_SIZE` | `1000` | Keys per request when passing them |
+| `FUSION_REFRESH_CONFIG` | *(none)* | Per-table incremental refresh, as JSON |
 
 ## Warp Setup
 
@@ -164,18 +198,30 @@ cd warp
 docker compose up -d
 ```
 
+Fusion authenticates with `WARP_API_KEY`, sent in the header Warp expects
+(`X-API-Key` by default, `FUSION_WARP_API_KEY_HEADER` to change it). Raw SQL
+pushdown is used only when Warp advertises it, so a Warp with
+`enable_raw_query: false` (the default, and mandatory in production) is fully
+supported through slices.
+
+Incremental refresh keeps a table up to date without re-reading it:
+
+```bash
+export FUSION_REFRESH_CONFIG='{"shop.orders": {"watermark_column": "updated_at", "key_columns": ["id"]}}'
+```
+
 ## Project Structure
 
 ```
 fusion/
 ├── __init__.py                 # public SDK: Settings, build_app, FusionApp, models, errors
 ├── bootstrap.py                # composition root (build_app, default_discovery)
-├── domain/                     # pure Python: models, catalog, identifiers, sql_text, views, errors
+├── domain/                     # pure Python: models, catalog, slices, query_shape, policy, identifiers, sql_text, views, errors
 ├── ports/                      # Protocols: DataSource, AnalyticsStore, SqlValidator/Analyzer, QueryCache, Scheduler
-├── application/                # Settings, FetchPlanner, Source/Query/View/Backup/Tool services, FusionApp
+├── application/                # Settings, FetchPlanner, Source/Query/View/Backup/Tool services, SemiJoinExecutor, FusionApp
 ├── adapters/
 │   ├── outbound/               # duckdb_store, sqlglot_policy, memory_cache, threading_scheduler, registry
-│   │   └── warp/               # http (pool + circuit breaker + SSRF guard), source, discovery
+│   │   └── warp/               # http (pool + circuit breaker + SSRF guard), capabilities, streams, source, discovery
 │   └── inbound/
 │       ├── rest/               # FastAPI app, routes, middleware (auth, logging), rate limit
 │       ├── mcp/                # MCPServer adapter
@@ -190,7 +236,7 @@ demo/demo.py                    # in-process demo over synthetic data
 
 ```bash
 uv sync --all-extras
-uv run pytest                    # 540+ tests, coverage gate 80%
+uv run pytest                    # 900+ tests, coverage gate 80%
 uv run ruff check fusion tests demo && uv run ruff format --check fusion tests demo
 uv run mypy fusion               # strict on domain/ports/application
 uv run python -m demo.demo       # demo with synthetic data (--scale 0.1 for a quick run)

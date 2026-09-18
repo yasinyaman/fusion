@@ -71,16 +71,25 @@ def build_app(
         source_factory = default_registry(settings.warp_http_defaults()).create
 
     catalog = SchemaCatalog()
-    planner = FetchPlanner(catalog, analyzer)
+    policy = settings.policy()
+    planner = FetchPlanner(catalog, analyzer, policy, clock)
     sources = SourceService(
         catalog,
         store,
         source_factory,
         max_ingest_rows=settings.max_ingest_rows,
         scheduler=scheduler,
+        policy=policy,
+        clock=clock,
+        refresh_config=settings.refresh_specs(),
+        # Refreshed data and rebuilt views change what a query returns, so
+        # anything cached from before must go.
+        on_data_changed=cache.clear,
     )
     query = QueryService(validator, analyzer, planner, cache, store, sources)
-    views = MaterializedViewService(store, validator, planner, sources, scheduler, clock)
+    views = MaterializedViewService(
+        store, validator, planner, sources, scheduler, clock, on_data_changed=cache.clear
+    )
     backup = BackupService(
         store,
         settings.backup_path,
@@ -90,7 +99,7 @@ def build_app(
         scheduler=scheduler,
         clock=clock,
     )
-    tools = ToolService(query, sources, views, store, catalog, cache)
+    tools = ToolService(query, sources, views, store, catalog, cache, planner, analyzer)
 
     return FusionApp(
         settings=settings,
@@ -106,8 +115,15 @@ def build_app(
     )
 
 
-def default_discovery() -> DatabaseDiscovery:
-    """The Warp database-discovery adapter (used by the CLIs for --auto-discover)."""
+def default_discovery(settings: Settings | None = None) -> DatabaseDiscovery:
+    """The Warp database-discovery adapter (used by the CLIs for --auto-discover).
+
+    With ``settings`` the Warp API key and header are applied to the probe.
+    """
     from fusion.adapters.outbound.warp.discovery import WarpDiscovery
 
-    return WarpDiscovery()
+    if settings is None:
+        return WarpDiscovery()
+    return WarpDiscovery(
+        api_key=settings.warp_api_key or None, api_key_header=settings.warp_api_key_header
+    )

@@ -2,6 +2,68 @@
 
 All notable changes to Fusion OLAP Engine.
 
+## [1.1.0] - 2026-09-18
+
+Smart transfer: a source table no longer has to fit in memory to be useful.
+Fusion reads the part of it a query actually touches, and says so plainly
+when even that is too much.
+
+### Added
+- **Slices.** A query's own columns and literal conditions become a
+  `SliceSpec`; only the matching rows and columns are fetched and they land
+  in their own table (`source.table__s_<hash>`). The original WHERE and ON
+  clauses stay in the rewritten query, so a slice can only narrow what is
+  scanned, never change a result. A later query whose needs are contained in
+  a loaded slice reuses it.
+- **Row budgets and actionable refusals.** `FUSION_FULL_LOAD_MAX_ROWS`,
+  `FUSION_SLICE_MAX_ROWS` and `FUSION_SLICE_BUDGET_ROWS` decide what may be
+  loaded; a table that is too big without a filter is refused with its
+  estimated size and the four ways to proceed. Slices past the budget are
+  evicted least-recently-used first.
+- **Semi-joins.** A huge table joined to a small one is fetched by the keys
+  the small one holds, in `FUSION_IN_CHUNK_SIZE` chunks, up to
+  `FUSION_SEMI_JOIN_MAX_KEYS` distinct values. The query's own conditions on
+  the small table narrow the key set, and a join that turns out not to be
+  selective is refused once it passes `FUSION_SLICE_MAX_ROWS` rather than
+  silently returning part of the answer.
+- **Arrow streaming ingest.** Warp 0.10's `/{table}/export` is read as an
+  Arrow IPC stream and handed to DuckDB batch by batch (NDJSON and paged
+  JSON are the fallbacks), so memory no longer scales with table size.
+  `AnalyticsStore` gains `materialize_stream`, `append_stream`, `upsert`,
+  `delete_where_in`, `table_size` and `rename_table`; a staged load is
+  published with a rename, so a reload is atomic.
+- **Typed schema and size estimates.** Warp 0.10's `/schema` provides column
+  types and planner row estimates, so the size of a table is known before
+  anything is fetched. `list_sources` reports `row_estimate` and the loaded
+  slices of each table.
+- **Incremental refresh.** `FUSION_REFRESH_CONFIG` (JSON, keyed by
+  `source.table`, with `watermark_column` and optional `key_columns`) tops a
+  table up instead of re-fetching it, replacing rows by key. Refreshing data
+  or rebuilding a materialized view now clears the query cache.
+- `load_table(table, where=..., columns=...)` loads a slice explicitly, over
+  the SDK, MCP and `POST /tables/{table}/load`. `search_data` on a table too
+  big to load fetches just the matching rows.
+
+### Fixed
+- Fusion sent `Authorization: Bearer`; Warp reads `X-API-Key`. The header is
+  now correct and configurable (`FUSION_WARP_API_KEY_HEADER`), and
+  `WARP_API_KEY` is passed to every Warp source and to `--auto-discover`.
+- The circuit breaker counted every failure, so five refused pushdowns
+  (HTTP 403) opened it and blocked all traffic for a minute. Only network
+  errors, 5xx, 408 and 429 count now; a Warp answering 4xx is healthy.
+- Raw SQL is only attempted when Warp advertises it, and a 403 turns
+  pushdown off for that source instead of being retried on every query.
+- `query()` sent `params` as a list; Warp binds named `:name` parameters
+  from an object.
+- A single-database Warp 0.9 serves un-prefixed table routes; the client now
+  detects that on a 404 and keeps the working layout.
+
+### Changed
+- `list_sources` gains `row_estimate` and `slices` per table; `load_table`
+  gains `where` and `columns` and returns the row count.
+- A table is "loaded" only when all of it is in the store. Partial slices
+  are tracked separately and never answer a query they do not cover.
+
 ## [1.0.0] - 2026-09-17
 
 ### Breaking

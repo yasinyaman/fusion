@@ -13,6 +13,7 @@ from typing import Any
 
 from fusion.application.planner import FetchPlanner
 from fusion.application.sources import SourceService
+from fusion.domain.errors import QueryError
 from fusion.domain.models import FetchPlan, QueryResult
 from fusion.ports.analytics_store import AnalyticsStore
 from fusion.ports.cache import QueryCache
@@ -39,6 +40,14 @@ class QueryService:
         self._store = store
         self._sources = sources
 
+    @property
+    def planner(self) -> FetchPlanner:
+        return self._planner
+
+    @property
+    def analyzer(self) -> SqlAnalyzer:
+        return self._analyzer
+
     def sql(
         self,
         query: str,
@@ -61,14 +70,15 @@ class QueryService:
                 logger.debug("Cache hit for query: %s", query[:80])
                 return cached
 
+        executed = query
         if auto_load and self._sources.has_sources:
-            plan = self._planner.plan_for_sql(query)
+            plan = self._planner.plan_query(query, estimator=self._sources.estimate_slice)
 
-            if params is None and plan.pushdown_eligible and plan.source_name:
-                source = self._sources.pushdown_source(plan.source_name)
+            if params is None and plan.fetch.pushdown_eligible and plan.fetch.source_name:
+                source = self._sources.pushdown_source(plan.fetch.source_name)
                 if source is not None:
                     try:
-                        result = self._execute_pushdown(query, plan, source)
+                        result = self._execute_pushdown(query, plan.fetch, source)
                     except Exception as e:
                         logger.info("Pushdown failed, falling back to local execution: %s", e)
                     else:
@@ -76,11 +86,21 @@ class QueryService:
                             self._cache.put(query, result, ttl=cache_ttl)
                         return result
 
-            if not plan.is_empty():
-                self._sources.ensure_loaded(plan.targets)
+            if plan.is_refused:
+                raise QueryError(plan.refusal)
+            for table_name in plan.evictions:
+                self._sources.evict_slice(table_name)
+            loaded = self._sources.ensure_slices(plan.targets)
+            mapping = {ref: name for ref, name in loaded.items() if name != ref.full_name}
+            if mapping:
+                # Only the table names change; the original WHERE and ON
+                # clauses stay, so a slice can only narrow what is scanned.
+                executed = self._analyzer.rewrite_tables(query, mapping)
+                if executed != query:
+                    logger.debug("Reading slices: %s", executed[:160])
 
         started = time.perf_counter()
-        rows = self._store.execute(query, params)
+        rows = self._store.execute(executed, params)
         elapsed_ms = (time.perf_counter() - started) * 1000
         result = QueryResult.from_rowset(rows, sql=query, execution_time_ms=elapsed_ms)
 

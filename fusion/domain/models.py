@@ -9,11 +9,11 @@ from __future__ import annotations
 import csv
 import io
 import json
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, Protocol, runtime_checkable
 
 from fusion.domain.errors import SchemaError
 
@@ -66,19 +66,34 @@ class ColumnInfo:
 
 @dataclass(slots=True)
 class TableSchema:
-    """Columns plus a (possibly unknown, ``-1``) row count."""
+    """Columns, the loaded row count and the source's own size estimate.
+
+    ``row_count`` is how many rows are in the analytics store (``-1`` until
+    the table is loaded); ``row_estimate`` is what the source reports about
+    the table at the other end (``-1`` when it cannot tell), which is what
+    the planner uses before anything is fetched.
+    """
 
     columns: list[ColumnInfo] = field(default_factory=list)
     row_count: int = -1
+    row_estimate: int = -1
 
     @property
     def column_names(self) -> set[str]:
         return {c.name for c in self.columns}
 
+    @property
+    def known_estimate(self) -> int | None:
+        """Best guess at the source-side size, or None when unknown."""
+        if self.row_estimate >= 0:
+            return self.row_estimate
+        return self.row_count if self.row_count >= 0 else None
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "columns": [c.as_dict() for c in self.columns],
             "row_count": self.row_count,
+            "row_estimate": self.row_estimate,
         }
 
 
@@ -130,6 +145,131 @@ class RowSet:
 
     def head(self, n: int) -> RowSet:
         return RowSet(columns=self.columns, rows=self.rows[:n])
+
+
+@runtime_checkable
+class RowStream(Protocol):
+    """Rows arriving in batches, so a large read never sits in memory whole.
+
+    Iterating yields ``RowSet`` batches. ``arrow_reader()`` is the fast path:
+    when the adapter already has an Arrow stream (a Warp Arrow IPC export),
+    it hands the reader over and the store ingests batches directly, without
+    ever building Python tuples. Domain code treats it as an opaque object.
+    """
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        """Column names (may be empty until the first batch arrives)."""
+        ...
+
+    @property
+    def schema(self) -> TableSchema | None:
+        """Column types when the source announced them, else None."""
+        ...
+
+    def __iter__(self) -> Iterator[RowSet]: ...
+
+    def arrow_reader(self) -> Any:
+        """A ``pyarrow.RecordBatchReader``-like object, or None. Consumed once."""
+        ...
+
+    def close(self) -> None: ...
+
+
+@dataclass(slots=True)
+class ListRowStream:
+    """A RowStream over rows already in memory (fakes, small results, tests)."""
+
+    rows: RowSet
+    batch_size: int = 10_000
+    table_schema: TableSchema | None = None
+
+    @classmethod
+    def from_records(
+        cls, records: Iterable[Mapping[str, Any]], batch_size: int = 10_000
+    ) -> ListRowStream:
+        return cls(RowSet.from_records(records), batch_size=batch_size)
+
+    @property
+    def columns(self) -> tuple[str, ...]:
+        return self.rows.columns
+
+    @property
+    def schema(self) -> TableSchema | None:
+        return self.table_schema
+
+    def __iter__(self) -> Iterator[RowSet]:
+        if not self.rows.rows:
+            yield RowSet(columns=self.rows.columns, rows=[])
+            return
+        for start in range(0, len(self.rows.rows), self.batch_size):
+            yield RowSet(
+                columns=self.rows.columns,
+                rows=self.rows.rows[start : start + self.batch_size],
+            )
+
+    def arrow_reader(self) -> Any:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceCapabilities:
+    """What a data source can do beyond fetching whole tables."""
+
+    #: Runs SQL on its own backend (``PushdownCapable``).
+    pushdown: bool = False
+    #: Serves filtered/projected reads through ``fetch_slice``.
+    slices: bool = False
+    #: ``fetch_slice`` can hand over an Arrow stream (no Python row objects).
+    arrow: bool = False
+    #: Reports table sizes without counting rows.
+    row_estimates: bool = False
+
+    def as_dict(self) -> dict[str, bool]:
+        return {
+            "pushdown": self.pushdown,
+            "slices": self.slices,
+            "arrow": self.arrow,
+            "row_estimates": self.row_estimates,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TableSize:
+    """How much room a table takes in the analytics store."""
+
+    rows: int = 0
+    bytes: int | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"rows": self.rows, "bytes": self.bytes}
+
+
+@dataclass(frozen=True, slots=True)
+class RefreshSpec:
+    """How to refresh one table incrementally.
+
+    ``watermark_column`` is a monotonically increasing column (``updated_at``,
+    an id): only rows above the highest value already loaded are fetched.
+    ``key_columns`` identify a row, so an updated row replaces its old copy
+    instead of being appended twice; without them the new rows are appended.
+    """
+
+    watermark_column: str = ""
+    key_columns: tuple[str, ...] = ()
+
+    @property
+    def is_incremental(self) -> bool:
+        return bool(self.watermark_column)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "watermark_column": self.watermark_column,
+            "key_columns": list(self.key_columns),
+        }
 
 
 @dataclass(slots=True)

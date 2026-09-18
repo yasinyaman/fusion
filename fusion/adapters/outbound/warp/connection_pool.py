@@ -17,7 +17,8 @@ class ConnectionPool:
     """Pooled HTTP session with exponential-backoff retries on transient errors.
 
     Redirects are never followed (SSRF guard) and the Warp API key, when
-    given, is sent as a bearer token on every request.
+    given, is sent on every request in ``api_key_header`` (Warp reads
+    ``X-API-Key`` by default; ``auth.header_name`` in its config).
     """
 
     def __init__(
@@ -28,6 +29,7 @@ class ConnectionPool:
         backoff_factor: float = 2.0,
         timeout: float = 30.0,
         api_key: str | None = None,
+        api_key_header: str = "X-API-Key",
     ) -> None:
         self.pool_size = pool_size
         self.max_overflow = max_overflow
@@ -38,8 +40,9 @@ class ConnectionPool:
         self.session = requests.Session()
         self.session.max_redirects = 0
         self.session.headers["Accept"] = "application/json"
+        self.api_key_header = api_key_header
         if api_key:
-            self.session.headers["Authorization"] = f"Bearer {api_key}"
+            self.session.headers[api_key_header] = api_key
 
         retry = Retry(
             total=max_retries,
@@ -89,6 +92,17 @@ class ConnectionPool:
         except requests.RequestException as e:
             logger.error("HTTP %s %s failed after %.2fs: %s", method, url, time.time() - started, e)
             raise
+
+    def stream(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        """Like ``request`` but the body is left unread for the caller to consume.
+
+        ``decode_content`` is set so a gzipped response is transparently
+        inflated while it is read (Arrow IPC and NDJSON are read from
+        ``response.raw``, which does not decode by itself).
+        """
+        response = self.request(method, url, stream=True, **kwargs)
+        response.raw.decode_content = True
+        return response
 
     def get(self, url: str, **kwargs: Any) -> requests.Response:
         return self.request("GET", url, **kwargs)

@@ -5,7 +5,8 @@ import pytest
 from fusion.adapters.outbound.warp.source import WarpSource
 from fusion.domain.errors import ConnectionError
 from fusion.domain.models import RowSet
-from fusion.ports.data_source import DataSource, PushdownCapable
+from fusion.domain.slices import Predicate, SliceSpec
+from fusion.ports.data_source import DataSource, PushdownCapable, fetch_slice_in_memory
 from tests.fakes import FakeDataSource, FakeWarpTransport, run_mock_sql
 
 TABLES = {
@@ -80,3 +81,74 @@ class TestDataSourceContract:
         assert counted.to_records() == [{"count": 3}]
         filtered = source.fetch_filtered("users", {"segment": "premium"}, limit=10)
         assert filtered.column("id") == [1, 3]
+
+
+class TestSliceContract:
+    """``fetch_slice`` must return exactly the rows the spec describes."""
+
+    def _rows(self, stream):
+        try:
+            return [dict(zip(b.columns, r, strict=True)) for b in stream for r in b.rows]
+        finally:
+            stream.close()
+
+    def test_capabilities_agree_with_supports_pushdown(self, source):
+        source.connect()
+        caps = source.capabilities
+        assert caps.pushdown == source.supports_pushdown
+        assert isinstance(caps.slices, bool) and isinstance(caps.arrow, bool)
+
+    def test_full_slice_returns_the_whole_table(self, source):
+        source.connect()
+        rows = self._rows(source.fetch_slice("users", SliceSpec.FULL))
+        assert [r["id"] for r in rows] == [1, 2, 3]
+
+    def test_predicates_filter_at_the_source(self, source):
+        source.connect()
+        spec = SliceSpec(predicates=(Predicate("segment", "eq", "premium"),))
+        rows = self._rows(source.fetch_slice("users", spec))
+        assert [r["name"] for r in rows] == ["Alice", "Cara"]
+
+    def test_several_predicates_are_an_and(self, source):
+        source.connect()
+        spec = SliceSpec(
+            predicates=(Predicate("segment", "eq", "premium"), Predicate("id", "gt", 1))
+        )
+        assert [r["id"] for r in self._rows(source.fetch_slice("users", spec))] == [3]
+
+    def test_projection_returns_only_those_columns(self, source):
+        source.connect()
+        spec = SliceSpec(columns=frozenset({"id", "name"}))
+        rows = self._rows(source.fetch_slice("users", spec))
+        assert all(set(r) == {"id", "name"} for r in rows)
+
+    def test_in_and_is_null_predicates(self, source):
+        source.connect()
+        in_spec = SliceSpec(predicates=(Predicate("id", "in", (1, 3)),))
+        assert [r["id"] for r in self._rows(source.fetch_slice("users", in_spec))] == [1, 3]
+
+    def test_limit_and_max_rows_both_cap_the_read(self, source):
+        source.connect()
+        assert len(self._rows(source.fetch_slice("users", SliceSpec(limit=2)))) == 2
+        assert len(self._rows(source.fetch_slice("users", SliceSpec.FULL, max_rows=1))) == 1
+
+    def test_a_slice_matching_nothing_is_empty(self, source):
+        source.connect()
+        spec = SliceSpec(predicates=(Predicate("segment", "eq", "nope"),))
+        assert self._rows(source.fetch_slice("users", spec)) == []
+
+    def test_estimate_slice_counts_without_fetching(self, source):
+        source.connect()
+        assert source.estimate_slice("users", SliceSpec.FULL) == 3
+        spec = SliceSpec(predicates=(Predicate("segment", "eq", "premium"),))
+        assert source.estimate_slice("users", spec) == 2
+
+    def test_fetch_slice_in_memory_matches_the_native_path(self, source):
+        source.connect()
+        spec = SliceSpec(
+            columns=frozenset({"id", "segment"}),
+            predicates=(Predicate("segment", "eq", "premium"),),
+        )
+        native = self._rows(source.fetch_slice("users", spec))
+        fallback = self._rows(fetch_slice_in_memory(source, "users", spec))
+        assert native == fallback

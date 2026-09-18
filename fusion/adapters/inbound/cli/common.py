@@ -66,7 +66,7 @@ def connect_sources(
     connected: list[str] = []
 
     if auto_discover:
-        databases = (discovery or default_discovery()).discover_databases(warp_url)
+        databases = (discovery or default_discovery(fusion.settings)).discover_databases(warp_url)
         if not databases:
             logger.warning("No databases discovered from %s, falling back to --database", warp_url)
             databases = [database]

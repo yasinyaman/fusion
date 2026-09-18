@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+from fusion.domain.models import RefreshSpec
+from fusion.domain.policy import MaterializationPolicy
+
+logger = logging.getLogger(__name__)
 
 # API keys that must never be accepted in production (placeholders/examples).
 PLACEHOLDER_API_KEYS = frozenset(
@@ -37,6 +44,10 @@ class Settings:
 
     # Warp gateway
     warp_url: str = "http://localhost:8000"
+    # Sent on every Warp request in ``warp_api_key_header`` (Warp's
+    # ``auth.header_name``, ``X-API-Key`` by default). Empty = no auth.
+    warp_api_key: str = ""
+    warp_api_key_header: str = "X-API-Key"
     warp_timeout: float = 30.0
     warp_max_retries: int = 3
     warp_backoff_factor: float = 2.0
@@ -52,6 +63,23 @@ class Settings:
     max_temp_directory_size: str = ""
     # Max rows pulled from a source when materializing a table (0 = unlimited).
     max_ingest_rows: int = 0
+
+    # How much data a query may pull in. A table bigger than
+    # ``full_load_max_rows`` is only read through a slice (the query's own
+    # WHERE and column list); if that is still too big the query is refused
+    # with concrete advice instead of filling memory.
+    full_load_max_rows: int = 500_000
+    slice_max_rows: int = 500_000
+    slice_budget_rows: int = 2_000_000
+    semi_join_max_keys: int = 50_000
+    in_chunk_size: int = 1_000
+
+    # How each table is refreshed, as JSON:
+    # {"ecommerce.orders": {"watermark_column": "updated_at",
+    #                       "key_columns": ["id"]}}
+    # A table listed here is refreshed incrementally (only rows above the
+    # highest watermark already loaded); everything else is re-fetched whole.
+    refresh_config: str = ""
 
     # Cache
     cache_ttl: int = 300
@@ -94,6 +122,9 @@ class Settings:
             host=get("FUSION_HOST", "0.0.0.0"),
             port=int(get("FUSION_PORT", "9000")),
             warp_url=get("WARP_URL", "http://localhost:8000"),
+            warp_api_key=get("WARP_API_KEY", ""),
+            warp_api_key_header=get("FUSION_WARP_API_KEY_HEADER", "X-API-Key").strip()
+            or "X-API-Key",
             warp_timeout=float(get("WARP_TIMEOUT", "30")),
             warp_max_retries=int(get("WARP_MAX_RETRIES", "3")),
             warp_backoff_factor=float(get("WARP_BACKOFF_FACTOR", "2")),
@@ -103,6 +134,12 @@ class Settings:
             external_access=_bool(get("FUSION_DUCKDB_EXTERNAL_ACCESS", "false")),
             max_temp_directory_size=get("FUSION_MAX_TEMP_DIRECTORY_SIZE", ""),
             max_ingest_rows=int(get("FUSION_MAX_INGEST_ROWS", "0")),
+            full_load_max_rows=int(get("FUSION_FULL_LOAD_MAX_ROWS", "500000")),
+            slice_max_rows=int(get("FUSION_SLICE_MAX_ROWS", "500000")),
+            slice_budget_rows=int(get("FUSION_SLICE_BUDGET_ROWS", "2000000")),
+            semi_join_max_keys=int(get("FUSION_SEMI_JOIN_MAX_KEYS", "50000")),
+            in_chunk_size=int(get("FUSION_IN_CHUNK_SIZE", "1000")),
+            refresh_config=get("FUSION_REFRESH_CONFIG", ""),
             cache_ttl=int(get("FUSION_CACHE_TTL", "300")),
             cache_max_entries=int(get("FUSION_CACHE_MAX_ENTRIES", "500")),
             api_key=get("FUSION_API_KEY", ""),
@@ -139,9 +176,46 @@ class Settings:
             return self.debug_endpoints.lower() == "true"
         return not self.is_production()
 
+    def policy(self) -> MaterializationPolicy:
+        """The row budgets the planner works to."""
+        return MaterializationPolicy(
+            full_load_max_rows=self.full_load_max_rows,
+            slice_max_rows=self.slice_max_rows,
+            slice_budget_rows=self.slice_budget_rows,
+            semi_join_max_keys=self.semi_join_max_keys,
+            in_chunk_size=self.in_chunk_size,
+        )
+
+    def refresh_specs(self) -> dict[str, RefreshSpec]:
+        """Per-table incremental refresh settings, keyed by ``source.table``.
+
+        A malformed value is logged and ignored: a bad refresh hint must not
+        stop the engine from starting.
+        """
+        if not self.refresh_config.strip():
+            return {}
+        try:
+            parsed = json.loads(self.refresh_config)
+        except ValueError as e:
+            logger.error("FUSION_REFRESH_CONFIG is not valid JSON, ignoring it: %s", e)
+            return {}
+        if not isinstance(parsed, dict):
+            logger.error("FUSION_REFRESH_CONFIG must be a JSON object, ignoring it")
+            return {}
+        specs: dict[str, RefreshSpec] = {}
+        for name, raw in parsed.items():
+            spec = refresh_spec_from(raw)
+            if spec is None:
+                logger.error("Ignoring refresh config for '%s': expected an object", name)
+                continue
+            specs[str(name)] = spec
+        return specs
+
     def warp_http_defaults(self) -> dict[str, Any]:
-        """Resilience/timeout defaults merged under every Warp source config."""
+        """Auth/resilience/timeout defaults merged under every Warp source config."""
         return {
+            "api_key": self.warp_api_key or None,
+            "api_key_header": self.warp_api_key_header,
             "timeout": self.warp_timeout,
             "max_retries": self.warp_max_retries,
             "backoff_factor": self.warp_backoff_factor,
@@ -171,3 +245,16 @@ class Settings:
                     "Specify explicit allowed origins."
                 )
         return errors
+
+
+def refresh_spec_from(raw: Any) -> RefreshSpec | None:
+    """Build a RefreshSpec from a config mapping (None when it is not one)."""
+    if not isinstance(raw, Mapping):
+        return None
+    keys = raw.get("key_columns") or ()
+    if isinstance(keys, str):
+        keys = [keys]
+    return RefreshSpec(
+        watermark_column=str(raw.get("watermark_column", "") or ""),
+        key_columns=tuple(str(k) for k in keys),
+    )

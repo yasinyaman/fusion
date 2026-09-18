@@ -67,6 +67,31 @@ class TestCircuitBreaker:
         assert st["failure_count"] == 0
         assert st["failure_threshold"] == 1
 
+    def test_is_failure_predicate_skips_counting(self):
+        cb = CircuitBreaker(
+            "t", failure_threshold=1, timeout=60, is_failure=lambda e: not isinstance(e, KeyError)
+        )
+
+        def missing():
+            raise KeyError("404-ish")
+
+        for _ in range(3):
+            with pytest.raises(KeyError):
+                cb.call(missing)
+        assert cb.state == CircuitState.CLOSED
+        assert cb.failure_count == 0
+        assert cb.last_failure_time is None
+        with pytest.raises(ValueError):
+            cb.call(_boom)  # still counted
+        assert cb.state == CircuitState.OPEN
+
+    def test_ignored_exception_does_not_count_as_success(self):
+        cb = CircuitBreaker("t", failure_threshold=2, timeout=60, is_failure=lambda e: False)
+        cb.failure_count = 1
+        with pytest.raises(ValueError):
+            cb.call(_boom)
+        assert cb.failure_count == 1  # neither reset nor incremented
+
     def test_validates_arguments(self):
         with pytest.raises(ValueError):
             CircuitBreaker("t", failure_threshold=0)

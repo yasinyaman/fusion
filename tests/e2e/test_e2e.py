@@ -4,10 +4,15 @@ The ``e2e_app`` fixture wires a real ``WarpSource`` to ``FakeWarpTransport``,
 so pagination, schema inference, pushdown and lazy loading all run for real.
 """
 
+from dataclasses import replace
+
 import pytest
 from fastapi.testclient import TestClient
 
 from fusion.adapters.inbound.rest.app import create_app
+from fusion.domain.errors import QueryError
+from tests.data import MOCK_DB
+from tests.fakes import FakeWarpTransport
 
 
 @pytest.fixture
@@ -165,6 +170,38 @@ class TestPushdown:
         assert e2e_app.catalog.is_loaded("ecommerce.orders")
 
 
+class TestLegacyWarp:
+    """Fusion keeps working against a Warp 0.9 (no schema/export, raw query off)."""
+
+    def test_queries_load_tables_without_pushdown(self, legacy_app, legacy_transport):
+        result = legacy_app.query.sql("SELECT COUNT(*) AS cnt FROM ecommerce.orders")
+        assert result.rows == [(8,)]
+        assert _pushdown_calls(legacy_transport) == []  # /info said raw_query_enabled=false
+        assert legacy_app.catalog.is_loaded("ecommerce.orders")
+        # The db-scoped URL 404s on a single-database Warp 0.9, so the source
+        # switched to the un-prefixed layout and stayed there.
+        legacy_transport.requests.clear()
+        legacy_app.query.sql("SELECT COUNT(*) AS cnt FROM ecommerce.products")
+        assert legacy_transport.urls("GET")
+        assert all("/ecommerce/" not in u for u in legacy_transport.urls("GET"))
+
+    def test_tools_work_end_to_end(self, legacy_app):
+        tools = legacy_app.tools
+        assert tools.search_data("ecommerce.users", "name", "Alice")["row_count"] == 1
+        agg = tools.aggregate_data("ecommerce.orders", "product", "amount", "SUM")
+        assert agg["rows"][0] == {"product": "Monitor", "sum_amount": 800.0}
+        assert tools.list_sources()["sources"][0]["source"] == "ecommerce"
+
+    def test_403_is_learned_once(self, denying_app, denying_transport):
+        # Warp advertises raw_query but refuses it at runtime (production).
+        assert denying_app.query.sql("SELECT COUNT(*) AS c FROM ecommerce.users").rows == [(5,)]
+        assert len(_pushdown_calls(denying_transport)) == 1  # the single 403
+        assert denying_app.query.sql("SELECT COUNT(*) AS c FROM ecommerce.orders").rows == [(8,)]
+        assert len(_pushdown_calls(denying_transport)) == 1  # never retried
+        source = denying_app.sources.source("ecommerce")
+        assert source is not None and source.supports_pushdown is False
+
+
 class TestRestApi:
     def test_health_and_tools(self, client):
         assert client.get("/health").json()["status"] == "healthy"
@@ -245,3 +282,155 @@ class TestWorkflows:
         )
         assert result["rows"][0]["name"] == "Charlie"
         assert result["rows"][0]["order_count"] == 2
+
+
+class TestSmartTransfer:
+    """A table too big for memory is still queryable, one slice at a time."""
+
+    def _exports(self, transport):
+        return [(m, u, p) for m, u, p in transport.requests if u.endswith("/export")]
+
+    def test_a_filtered_query_fetches_only_the_matching_rows(self, big_app, big_transport):
+        result = big_app.query.sql(
+            "SELECT id, amount FROM ecommerce.orders WHERE status = 'pending'"
+        )
+        assert result.row_count == 2
+        assert not big_app.catalog.is_loaded("ecommerce.orders")
+        slices = big_app.catalog.slices_of("ecommerce.orders")
+        assert len(slices) == 1 and slices[0].row_count == 2
+        params = self._exports(big_transport)[-1][2]
+        assert params["filter[status][eq]"] == "pending"
+        assert set(params["fields"].split(",")) == {"amount", "id", "status"}
+
+    def test_list_sources_shows_the_estimate_and_the_slices(self, big_app):
+        big_app.query.sql("SELECT id FROM ecommerce.orders WHERE status = 'pending'")
+        tables = {t["name"]: t for t in big_app.tools.list_sources()["sources"][0]["tables"]}
+        orders = tables["ecommerce.orders"]
+        assert orders["loaded"] is False
+        assert big_app.catalog.get_table("ecommerce.orders").row_estimate == 9_000_000
+
+    def test_an_unfiltered_query_is_refused_with_advice(self, big_app, big_transport):
+        with pytest.raises(QueryError) as error:
+            big_app.query.sql("SELECT * FROM ecommerce.orders")
+        message = str(error.value)
+        assert "9,000,000 rows estimated" in message
+        assert "add a WHERE condition" in message
+        assert self._exports(big_transport) == []  # nothing was fetched
+
+    def test_the_slice_is_reused_by_a_narrower_query(self, big_app, big_transport):
+        big_app.query.sql("SELECT * FROM ecommerce.orders WHERE amount > 50")
+        before = len(self._exports(big_transport))
+        result = big_app.query.sql("SELECT * FROM ecommerce.orders WHERE amount > 200")
+        assert result.row_count == 3
+        assert len(self._exports(big_transport)) == before
+
+    def test_a_small_table_still_loads_whole_and_joins(self, big_app):
+        result = big_app.query.sql(
+            "SELECT u.name, o.amount FROM ecommerce.users u "
+            "JOIN ecommerce.orders o ON u.id = o.user_id "
+            "WHERE o.status = 'pending' ORDER BY o.amount"
+        )
+        assert [r["name"] for r in result.to_records()] == ["Charlie", "Alice"]
+        assert big_app.catalog.is_loaded("ecommerce.users")
+        assert not big_app.catalog.is_loaded("ecommerce.orders")
+
+    def test_rows_arrive_over_arrow(self, big_app, big_transport):
+        big_app.query.sql("SELECT amount FROM ecommerce.orders WHERE status = 'completed'")
+        assert self._exports(big_transport)[-1][2]["format"] == "arrow"
+        rows = big_app.query.sql(
+            "SELECT SUM(amount) AS total FROM ecommerce.orders WHERE status = 'completed'"
+        )
+        assert rows.rows == [(1415.0,)]
+
+    def test_legacy_warp_slices_through_the_list_endpoint(self, settings, scheduler):
+        from tests.conftest import _e2e_app
+
+        transport = FakeWarpTransport(
+            MOCK_DB,
+            database="ecommerce",
+            mode="legacy",
+            raw_query=False,
+            page_format="data",
+            row_estimates={"orders": 9_000_000},
+        )
+        app = _e2e_app(
+            replace(settings, full_load_max_rows=100, slice_max_rows=1000), scheduler, transport
+        )
+        try:
+            result = app.query.sql("SELECT id FROM ecommerce.orders WHERE status = 'pending'")
+            assert result.row_count == 2
+            assert self._exports(transport) == []  # no export endpoint on 0.9
+            filtered = [p for m, u, p in transport.requests if "filter[status][eq]" in p]
+            assert filtered and all(p["filter[status][eq]"] == "pending" for p in filtered)
+        finally:
+            app.close()
+
+    def test_pushdown_still_wins_when_warp_allows_raw_sql(self, settings, scheduler):
+        from tests.conftest import _e2e_app
+
+        transport = FakeWarpTransport(
+            MOCK_DB, database="ecommerce", row_estimates={"orders": 9_000_000}
+        )
+        app = _e2e_app(
+            replace(settings, full_load_max_rows=100, slice_max_rows=1000), scheduler, transport
+        )
+        try:
+            # Warp answers the whole query itself, so nothing is materialized
+            # and the size limits never come into play.
+            assert app.query.sql("SELECT * FROM ecommerce.orders").row_count == 8
+            assert app.catalog.slices_of("ecommerce.orders") == []
+            assert _pushdown_calls(transport)
+        finally:
+            app.close()
+
+
+class TestSemiJoinOverWarp:
+    """A join to a huge Warp table fetches only the rows that can match."""
+
+    def test_keys_are_passed_to_warp(self, big_app, big_transport):
+        result = big_app.query.sql(
+            "SELECT u.name, COUNT(*) AS n FROM ecommerce.users u "
+            "JOIN ecommerce.orders o ON u.id = o.user_id "
+            "GROUP BY u.name ORDER BY n DESC, u.name"
+        )
+        assert result.to_records()[0] == {"name": "Alice", "n": 3}
+        assert big_app.catalog.is_loaded("ecommerce.users")
+        assert not big_app.catalog.is_loaded("ecommerce.orders")
+        loaded = big_app.catalog.slices_of("ecommerce.orders")[0]
+        assert loaded.derived_from == "semijoin:ecommerce.users.id"
+        exported = [p for m, u, p in big_transport.requests if u.endswith("/orders/export")]
+        assert exported, "the big table was never exported"
+        assert "filter[user_id][in]" in exported[-1]
+
+
+class TestIncrementalRefreshOverWarp:
+    """A watermarked table is topped up through the export endpoint."""
+
+    def test_only_new_rows_are_exported(self, settings, scheduler):
+        from tests.conftest import _e2e_app
+
+        transport = FakeWarpTransport(
+            {**MOCK_DB, "events": [{"id": 1, "kind": "a"}, {"id": 2, "kind": "b"}]},
+            database="ecommerce",
+            raw_query=False,
+        )
+        app = _e2e_app(
+            replace(
+                settings,
+                refresh_config='{"ecommerce.events": {"watermark_column": "id", '
+                '"key_columns": ["id"]}}',
+            ),
+            scheduler,
+            transport,
+        )
+        try:
+            app.sources.ensure_loaded(["ecommerce.events"])
+            assert app.query.sql("SELECT COUNT(*) AS n FROM ecommerce.events").rows == [(2,)]
+            transport.db["events"].append({"id": 3, "kind": "c"})
+            app.sources.refresh_all()
+            exported = [p for m, u, p in transport.requests if u.endswith("/events/export")]
+            assert exported[-1]["filter[id][gt]"] == "2"
+            result = app.query.sql("SELECT COUNT(*) AS n FROM ecommerce.events")
+            assert result.rows == [(3,)] and result.from_cache is False
+        finally:
+            app.close()

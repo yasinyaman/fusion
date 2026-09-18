@@ -11,10 +11,15 @@ from fusion.domain.models import (
     BackupInfo,
     ColumnInfo,
     FetchPlan,
+    ListRowStream,
     QueryResult,
+    RefreshSpec,
     RowSet,
+    RowStream,
+    SourceCapabilities,
     TableRef,
     TableSchema,
+    TableSize,
     coerce_ref,
 )
 
@@ -62,10 +67,18 @@ class TestTableSchema:
                 {"name": "n", "type": "varchar", "nullable": True},
             ],
             "row_count": 3,
+            "row_estimate": -1,
         }
+
+    def test_known_estimate_prefers_the_source_estimate(self):
+        assert TableSchema().known_estimate is None
+        assert TableSchema(row_count=7).known_estimate == 7
+        assert TableSchema(row_count=7, row_estimate=9_000).known_estimate == 9_000
+        assert TableSchema(row_estimate=0).known_estimate == 0
 
     def test_defaults(self):
         assert TableSchema().row_count == -1
+        assert TableSchema().row_estimate == -1
         assert TableSchema().columns == []
 
 
@@ -204,3 +217,50 @@ class TestBackupInfo:
         assert d["kind"] == "export"
         assert d["size_mb"] == 2.0
         assert d["created_at"].startswith("2026-01-02")
+
+
+class TestListRowStream:
+    def test_batches(self):
+        stream = ListRowStream.from_records([{"id": i} for i in range(5)], batch_size=2)
+        batches = list(stream)
+        assert [len(b) for b in batches] == [2, 2, 1]
+        assert stream.columns == ("id",)
+        assert [r[0] for b in batches for r in b.rows] == [0, 1, 2, 3, 4]
+
+    def test_empty_stream_still_announces_columns(self):
+        stream = ListRowStream(RowSet(columns=("id", "name"), rows=[]))
+        batches = list(stream)
+        assert len(batches) == 1 and batches[0].is_empty
+        assert batches[0].columns == ("id", "name")
+
+    def test_schema_and_no_arrow_fast_path(self):
+        schema = TableSchema([ColumnInfo("id", "integer")])
+        stream = ListRowStream(RowSet.from_records([{"id": 1}]), table_schema=schema)
+        assert stream.schema is schema
+        assert stream.arrow_reader() is None
+        assert stream.close() is None
+
+    def test_satisfies_the_row_stream_protocol(self):
+        stream = ListRowStream.from_records([{"id": 1}])
+        assert isinstance(stream, RowStream)
+
+
+class TestCapabilitiesAndSizes:
+    def test_source_capabilities_defaults_to_nothing(self):
+        caps = SourceCapabilities()
+        assert caps.as_dict() == {
+            "pushdown": False,
+            "slices": False,
+            "arrow": False,
+            "row_estimates": False,
+        }
+
+    def test_table_size(self):
+        assert TableSize(rows=3, bytes=1024).as_dict() == {"rows": 3, "bytes": 1024}
+        assert TableSize().as_dict() == {"rows": 0, "bytes": None}
+
+    def test_refresh_spec(self):
+        assert not RefreshSpec().is_incremental
+        spec = RefreshSpec("updated_at", ("id",))
+        assert spec.is_incremental
+        assert spec.as_dict() == {"watermark_column": "updated_at", "key_columns": ["id"]}

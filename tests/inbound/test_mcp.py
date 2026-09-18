@@ -57,3 +57,16 @@ class TestMCPServer:
             )
         )
         assert json.loads(_text(result))["row_count"] == 1
+
+
+def test_load_table_accepts_a_slice(server):
+    result = _await(
+        server.call_tool(
+            "load_table",
+            {"table": "test_db.orders", "where": "product = 'A'", "columns": ["id", "product"]},
+        )
+    )
+    payload = json.loads(_text(result))
+    assert payload["status"] == "loaded"
+    assert payload["slice"] == "columns=id,product where product = 'A'"
+    assert payload["row_count"] == 3

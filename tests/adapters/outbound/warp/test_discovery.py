@@ -59,7 +59,17 @@ class TestDiscoverDatabases:
             responses.GET, f"{BASE}/info", json={"databases": {"db1": {}, "db2": {}}}, status=200
         )
         assert set(discover_databases(BASE, api_key="k")) == {"db1", "db2"}
-        assert responses.calls[0].request.headers["Authorization"] == "Bearer k"
+        assert responses.calls[0].request.headers["X-API-Key"] == "k"
+        assert "Authorization" not in responses.calls[0].request.headers
+
+    @responses.activate
+    def test_custom_api_key_header(self):
+        responses.add(responses.GET, f"{BASE}/health", json={}, status=200)
+        responses.add(responses.GET, f"{BASE}/info", json={"databases": {"db1": {}}}, status=200)
+        assert WarpDiscovery(api_key="k", api_key_header="X-Warp-Key").discover_databases(BASE) == [
+            "db1"
+        ]
+        assert responses.calls[0].request.headers["X-Warp-Key"] == "k"
 
     def test_warp_discovery_port(self):
         transport = FakeWarpTransport({}, info={"databases": ["x"]})
