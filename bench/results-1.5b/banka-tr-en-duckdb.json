@@ -13,7 +13,7 @@
       },
       "exact_match": 0.2,
       "hallucination_rate": 0.275,
-      "median_latency_ms": 497.3
+      "median_latency_ms": 482.1
     },
     {
       "name": "catalog",
@@ -24,7 +24,7 @@
       },
       "exact_match": 0.35,
       "hallucination_rate": 0.15,
-      "median_latency_ms": 483.3
+      "median_latency_ms": 474.0
     },
     {
       "name": "semantic",
@@ -35,18 +35,18 @@
       },
       "exact_match": 0.0,
       "hallucination_rate": 0.15,
-      "median_latency_ms": 1404.2
+      "median_latency_ms": 1399.6
     },
     {
       "name": "lexicon",
       "accuracy": {
-        "point": 0.45,
-        "low": 0.3070530781090492,
-        "high": 0.6017090820106795
+        "point": 0.525,
+        "low": 0.3749736210669247,
+        "high": 0.670645298873211
       },
       "exact_match": 0.0,
       "hallucination_rate": 0.0,
-      "median_latency_ms": 2.1
+      "median_latency_ms": 2.2
     },
     {
       "name": "semantic-schema",
@@ -57,56 +57,78 @@
       },
       "exact_match": 0.0,
       "hallucination_rate": 0.0,
-      "median_latency_ms": 1659.7
+      "median_latency_ms": 1748.2
+    },
+    {
+      "name": "lexicon+repair",
+      "accuracy": {
+        "point": 0.275,
+        "low": 0.16108016247667334,
+        "high": 0.4283495580621057
+      },
+      "exact_match": 0.0,
+      "hallucination_rate": 0.0,
+      "median_latency_ms": 2038.8
     }
   ],
   "comparisons": [
     {
-      "first": "semantic-schema",
+      "first": "lexicon+repair",
       "second": "raw",
-      "gap_points": 10.0,
-      "only_first": 7,
+      "gap_points": 5.0,
+      "only_first": 5,
       "only_second": 3,
       "both": 6,
-      "neither": 24,
-      "discordant": 10,
-      "p_value": 0.34375
+      "neither": 26,
+      "discordant": 8,
+      "p_value": 0.7265625
     },
     {
-      "first": "semantic-schema",
+      "first": "lexicon+repair",
       "second": "catalog",
-      "gap_points": -15.0,
-      "only_first": 3,
-      "only_second": 9,
+      "gap_points": -20.0,
+      "only_first": 4,
+      "only_second": 12,
+      "both": 7,
+      "neither": 17,
+      "discordant": 16,
+      "p_value": 0.076812744140625
+    },
+    {
+      "first": "lexicon+repair",
+      "second": "semantic",
+      "gap_points": 12.5,
+      "only_first": 7,
+      "only_second": 2,
+      "both": 4,
+      "neither": 27,
+      "discordant": 9,
+      "p_value": 0.1796875
+    },
+    {
+      "first": "lexicon+repair",
+      "second": "lexicon",
+      "gap_points": -25.0,
+      "only_first": 1,
+      "only_second": 11,
       "both": 10,
       "neither": 18,
       "discordant": 12,
-      "p_value": 0.14599609375
+      "p_value": 0.00634765625
     },
     {
-      "first": "semantic-schema",
-      "second": "semantic",
-      "gap_points": 17.5,
-      "only_first": 8,
-      "only_second": 1,
-      "both": 5,
-      "neither": 26,
-      "discordant": 9,
-      "p_value": 0.0390625
-    },
-    {
-      "first": "semantic-schema",
-      "second": "lexicon",
-      "gap_points": -12.5,
-      "only_first": 4,
-      "only_second": 9,
+      "first": "lexicon+repair",
+      "second": "semantic-schema",
+      "gap_points": -5.0,
+      "only_first": 2,
+      "only_second": 4,
       "both": 9,
-      "neither": 18,
-      "discordant": 13,
-      "p_value": 0.266845703125
+      "neither": 25,
+      "discordant": 6,
+      "p_value": 0.6875
     }
   ],
-  "verdict": "Stop investing in the DSL: it beats the catalog arm by only -15.0 points (< 5.0). Put the effort into catalog quality and text-to-SQL.",
+  "verdict": "Stop investing in the DSL: it beats the catalog arm by only -20.0 points (< 5.0). Put the effort into catalog quality and text-to-SQL.",
   "grades": {
     "raw": {
       "q01-tr": {
@@ -114,63 +136,63 @@
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2277.3
+        "latency_ms": 3231.8
       },
       "q01-en": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 310.2
+        "latency_ms": 304.2
       },
       "q02-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 479.4
+        "latency_ms": 475.9
       },
       "q02-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 477.7
+        "latency_ms": 470.4
       },
       "q03-tr": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 236.6
+        "latency_ms": 233.7
       },
       "q03-en": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 235.7
+        "latency_ms": 227.1
       },
       "q04-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 772.5
+        "latency_ms": 764.0
       },
       "q04-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 376.6
+        "latency_ms": 381.1
       },
       "q05-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 467.9
+        "latency_ms": 470.6
       },
       "q05-en": {
         "correct": false,
@@ -183,7 +205,7 @@
           "transaction"
         ],
         "error": "",
-        "latency_ms": 428.3
+        "latency_ms": 445.4
       },
       "q06-tr": {
         "correct": false,
@@ -193,7 +215,7 @@
           "year"
         ],
         "error": "",
-        "latency_ms": 741.3
+        "latency_ms": 722.5
       },
       "q06-en": {
         "correct": false,
@@ -202,7 +224,7 @@
           "month"
         ],
         "error": "",
-        "latency_ms": 984.4
+        "latency_ms": 954.2
       },
       "q07-tr": {
         "correct": false,
@@ -211,35 +233,35 @@
           "i"
         ],
         "error": "",
-        "latency_ms": 1134.4
+        "latency_ms": 1137.6
       },
       "q07-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 479.9
+        "latency_ms": 474.4
       },
       "q08-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 462.7
+        "latency_ms": 453.1
       },
       "q08-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 497.7
+        "latency_ms": 470.9
       },
       "q09-tr": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 374.3
+        "latency_ms": 370.5
       },
       "q09-en": {
         "correct": true,
@@ -248,21 +270,21 @@
           "exists"
         ],
         "error": "",
-        "latency_ms": 726.2
+        "latency_ms": 724.3
       },
       "q10-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 420.3
+        "latency_ms": 419.3
       },
       "q10-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 420.6
+        "latency_ms": 420.9
       },
       "q11-tr": {
         "correct": false,
@@ -272,7 +294,7 @@
           "month"
         ],
         "error": "",
-        "latency_ms": 774.6
+        "latency_ms": 762.0
       },
       "q11-en": {
         "correct": false,
@@ -283,7 +305,7 @@
           "year"
         ],
         "error": "",
-        "latency_ms": 1049.0
+        "latency_ms": 1029.6
       },
       "q12-tr": {
         "correct": false,
@@ -295,42 +317,42 @@
           "substr"
         ],
         "error": "execution failed: Parser Error: syntax error at or near \"%\"\n\nLINE 2: ...(islem_tarihi, 1, 7) = '2022-01' THEN tutar ELSE 0 END) AS %_de\u011fi\u015fim\n                                                                      ^",
-        "latency_ms": 2427.0
+        "latency_ms": 2391.9
       },
       "q12-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "execution failed: Parser Error: syntax error at or near \")\"\n\nLINE 2: ... CURRENT ROW AND LAG(islem_tarihi) OVER (ORDER BY islem_tarihi))) * 100 / SUM(tutar) OVER () AS month_over_month_percentag...\n                                                                          ^",
-        "latency_ms": 1364.7
+        "latency_ms": 1348.7
       },
       "q13-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 634.3
+        "latency_ms": 623.3
       },
       "q13-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "execution failed: Binder Error: Referenced column \"segment\" not found in FROM clause!\nCandidate bindings: \"islem_turu\", \"islem_tarihi\", \"islem_id\"\n\nLINE 1: SELECT SUM(tutar) FROM islemler WHERE segment = 'premium'\n                                              ^",
-        "latency_ms": 415.1
+        "latency_ms": 406.5
       },
       "q14-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 445.8
+        "latency_ms": 441.0
       },
       "q14-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "execution failed: Binder Error: Aggregate functions are not supported here\n\nLINE 1: ...mler WHERE kanal = 'mobile' ORDER BY tutar LIMIT 1 OFFSET (COUNT(*) - 1) / 2\n                                                                      ^",
-        "latency_ms": 738.2
+        "latency_ms": 725.0
       },
       "q15-tr": {
         "correct": false,
@@ -339,7 +361,7 @@
           "i"
         ],
         "error": "",
-        "latency_ms": 537.5
+        "latency_ms": 543.3
       },
       "q15-en": {
         "correct": false,
@@ -348,7 +370,7 @@
           "canal"
         ],
         "error": "execution failed: Binder Error: Referenced column \"canal\" not found in FROM clause!\nCandidate bindings: \"kanal\", \"para_birimi\"\n\nLINE 1: ... canal, SUM(tutar) AS toplam_satis FROM islemler GROUP BY canal ORDER BY toplam_satis DESC\n                                                                     ^",
-        "latency_ms": 623.3
+        "latency_ms": 621.1
       },
       "q16-tr": {
         "correct": false,
@@ -358,70 +380,70 @@
           "m"
         ],
         "error": "execution failed: Binder Error: column \"ad_soyad\" must appear in the GROUP BY clause or must be part of an aggregate function.\nEither add it to the GROUP BY list, or use \"ANY_VALUE(ad_soyad)\" if the exact value of \"ad_soyad\" is not important.\n\nLINE 1: SELECT m.ad_soyad, COUNT(i.islem_id) AS toplam_islemler FROM muste...\n               ^",
-        "latency_ms": 1217.5
+        "latency_ms": 1197.8
       },
       "q16-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1001.5
+        "latency_ms": 991.1
       },
       "q17-tr": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 320.5
+        "latency_ms": 321.0
       },
       "q17-en": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 321.8
+        "latency_ms": 318.2
       },
       "q18-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 467.6
+        "latency_ms": 452.5
       },
       "q18-en": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 469.5
+        "latency_ms": 454.8
       },
       "q19-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 496.9
+        "latency_ms": 488.3
       },
       "q19-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 567.5
+        "latency_ms": 558.8
       },
       "q20-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 818.0
+        "latency_ms": 832.4
       },
       "q20-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "execution failed: Binder Error: Referenced column \"segment\" not found in FROM clause!\nCandidate bindings: \"islem_turu\", \"islem_tarihi\", \"islem_id\"\n\nLINE 1: ...(*) AS toplam_islemler, segment, kanal FROM islemler GROUP BY segment, kanal\n                                                                         ^",
-        "latency_ms": 601.2
+        "latency_ms": 591.1
       }
     },
     "catalog": {
@@ -430,70 +452,70 @@
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 672.9
+        "latency_ms": 654.7
       },
       "q01-en": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 307.9
+        "latency_ms": 300.7
       },
       "q02-tr": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 467.3
+        "latency_ms": 456.2
       },
       "q02-en": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 450.9
+        "latency_ms": 453.9
       },
       "q03-tr": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 239.0
+        "latency_ms": 232.6
       },
       "q03-en": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 229.7
+        "latency_ms": 234.2
       },
       "q04-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "execution failed: Binder Error: Referenced column \"segment\" not found in FROM clause!\nCandidate bindings: \"islem_turu\", \"islem_tarihi\", \"islem_id\"\n\nLINE 1: SELECT COUNT(*) FROM islemler WHERE segment = 'premium'\n                                            ^",
-        "latency_ms": 377.4
+        "latency_ms": 369.4
       },
       "q04-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 327.2
+        "latency_ms": 319.5
       },
       "q05-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 448.3
+        "latency_ms": 440.8
       },
       "q05-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 513.5
+        "latency_ms": 505.4
       },
       "q06-tr": {
         "correct": false,
@@ -502,70 +524,70 @@
           "current_date"
         ],
         "error": "",
-        "latency_ms": 832.7
+        "latency_ms": 825.7
       },
       "q06-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 953.8
+        "latency_ms": 943.7
       },
       "q07-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 517.4
+        "latency_ms": 508.8
       },
       "q07-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 410.7
+        "latency_ms": 403.3
       },
       "q08-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 430.8
+        "latency_ms": 425.0
       },
       "q08-en": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 429.3
+        "latency_ms": 420.9
       },
       "q09-tr": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 365.7
+        "latency_ms": 371.4
       },
       "q09-en": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 373.8
+        "latency_ms": 369.5
       },
       "q10-tr": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 414.3
+        "latency_ms": 406.4
       },
       "q10-en": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 407.7
+        "latency_ms": 402.0
       },
       "q11-tr": {
         "correct": false,
@@ -574,7 +596,7 @@
           "current_date"
         ],
         "error": "",
-        "latency_ms": 774.4
+        "latency_ms": 758.2
       },
       "q11-en": {
         "correct": false,
@@ -583,7 +605,7 @@
           "substr"
         ],
         "error": "execution failed: Binder Error: No function matches the given name and argument types 'substr(DATE, INTEGER_LITERAL, INTEGER_LITERAL)'. You might need to add explicit type casts.\n\tCandidate functions:\n\tsubstr(VARCHAR, BIGINT, BIGINT) -> VARCHAR\n\tsubstr(VARCHAR, BIGINT) -> VARCHAR\n\n\nLINE 9:     SUBSTR(islem_tarihi, 1, 7)\n            ^",
-        "latency_ms": 1518.2
+        "latency_ms": 1515.6
       },
       "q12-tr": {
         "correct": false,
@@ -596,7 +618,7 @@
           "year"
         ],
         "error": "execution failed: Parser Error: syntax error at or near \"%\"\n\nLINE 3: ...  AVG(tutar) - LAG(AVG(tutar)) OVER (ORDER BY islem_tarihi) AS %_de\u011fi\u015fim\n                                                                          ^",
-        "latency_ms": 1805.9
+        "latency_ms": 1769.0
       },
       "q12-en": {
         "correct": false,
@@ -606,112 +628,112 @@
           "t2"
         ],
         "error": "",
-        "latency_ms": 2044.1
+        "latency_ms": 2024.6
       },
       "q13-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 751.7
+        "latency_ms": 738.5
       },
       "q13-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 749.6
+        "latency_ms": 745.6
       },
       "q14-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 442.7
+        "latency_ms": 436.8
       },
       "q14-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "execution failed: Binder Error: Aggregate functions are not supported here\n\nLINE 1: ... islemler WHERE kanal = 'mobil' ORDER BY tutar LIMIT 1 OFFSET (COUNT(*) - 1) / 2\n                                                                          ^",
-        "latency_ms": 755.5
+        "latency_ms": 744.4
       },
       "q15-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 762.6
+        "latency_ms": 746.0
       },
       "q15-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 842.9
+        "latency_ms": 827.4
       },
       "q16-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "execution failed: Binder Error: column \"ad_soyad\" must appear in the GROUP BY clause or must be part of an aggregate function.\nEither add it to the GROUP BY list, or use \"ANY_VALUE(ad_soyad)\" if the exact value of \"ad_soyad\" is not important.\n\nLINE 1: SELECT ad_soyad, COUNT(*) AS toplam_islemler FROM musteriler JOIN...\n               ^",
-        "latency_ms": 1161.0
+        "latency_ms": 1164.3
       },
       "q16-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "execution failed: Binder Error: column \"ad_soyad\" must appear in the GROUP BY clause or must be part of an aggregate function.\nEither add it to the GROUP BY list, or use \"ANY_VALUE(ad_soyad)\" if the exact value of \"ad_soyad\" is not important.\n\nLINE 1: SELECT ad_soyad, COUNT(*) AS transaction_count\n               ^",
-        "latency_ms": 1184.5
+        "latency_ms": 1154.0
       },
       "q17-tr": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 327.2
+        "latency_ms": 320.8
       },
       "q17-en": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 324.8
+        "latency_ms": 321.0
       },
       "q18-tr": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 454.0
+        "latency_ms": 458.3
       },
       "q18-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 575.4
+        "latency_ms": 574.7
       },
       "q19-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 499.8
+        "latency_ms": 491.4
       },
       "q19-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 688.7
+        "latency_ms": 673.5
       },
       "q20-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "execution failed: Binder Error: Referenced column \"segment\" not found in FROM clause!\nCandidate bindings: \"islem_turu\", \"islem_tarihi\", \"islem_id\"\n\nLINE 1: SELECT COUNT(*) FROM islemler WHERE segment = 'premium' AND kanal = 'web'\n                                            ^",
-        "latency_ms": 499.2
+        "latency_ms": 489.7
       },
       "q20-en": {
         "correct": false,
@@ -720,7 +742,7 @@
           "canal"
         ],
         "error": "execution failed: Binder Error: Referenced column \"segment\" not found in FROM clause!\nCandidate bindings: \"islem_turu\", \"islem_tarihi\", \"islem_id\"\n\nLINE 1: SELECT segment, canal, COUNT(*) FROM islemler GROUP BY segment, canal\n                                                               ^",
-        "latency_ms": 422.1
+        "latency_ms": 421.4
       }
     },
     "semantic": {
@@ -729,35 +751,35 @@
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1621.9
+        "latency_ms": 1595.8
       },
       "q01-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1024.5
+        "latency_ms": 1011.8
       },
       "q02-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1729.2
+        "latency_ms": 1725.8
       },
       "q02-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1737.8
+        "latency_ms": 1722.0
       },
       "q03-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "Cannot parse metric '*': expected ':' and an aggregation after '*' (for example '*:sum') at position 1.\n  *\n   ^",
-        "latency_ms": 1022.4
+        "latency_ms": 1033.3
       },
       "q03-en": {
         "correct": false,
@@ -766,63 +788,63 @@
           "count"
         ],
         "error": "Cannot parse metric 'count': expected ':' and an aggregation after 'count' (for example 'count:sum') at position 5.\n  count\n       ^",
-        "latency_ms": 890.3
+        "latency_ms": 881.4
       },
       "q04-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "Unknown dimension 'segment' for banka.islemler. Available dimensions: islem_id, musteri_id, tutar, para_birimi, islem_turu, durum, islem_tarihi, kanal. Call list_metrics('banka.islemler') for the full model.",
-        "latency_ms": 1104.7
+        "latency_ms": 1111.7
       },
       "q04-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "Unknown dimension 'segment' for banka.islemler. Available dimensions: islem_id, musteri_id, tutar, para_birimi, islem_turu, durum, islem_tarihi, kanal. Call list_metrics('banka.islemler') for the full model.",
-        "latency_ms": 1091.9
+        "latency_ms": 1110.5
       },
       "q05-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1107.0
+        "latency_ms": 1097.0
       },
       "q05-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1100.3
+        "latency_ms": 1098.7
       },
       "q06-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1255.2
+        "latency_ms": 1248.0
       },
       "q06-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1126.4
+        "latency_ms": 1111.1
       },
       "q07-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "order_by must be a single column name, got [{'column': 'tutar', 'op': 'desc'}]. Prefix it with '-' to sort descending, e.g. order_by='-revenue_sum'.",
-        "latency_ms": 2728.6
+        "latency_ms": 2715.3
       },
       "q07-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1013.0
+        "latency_ms": 1009.9
       },
       "q08-tr": {
         "correct": false,
@@ -831,7 +853,7 @@
           "count"
         ],
         "error": "Cannot parse metric 'count': expected ':' and an aggregation after 'count' (for example 'count:sum') at position 5.\n  count\n       ^",
-        "latency_ms": 1041.4
+        "latency_ms": 1034.4
       },
       "q08-en": {
         "correct": false,
@@ -840,14 +862,14 @@
           "count"
         ],
         "error": "Cannot parse metric 'count': expected ':' and an aggregation after 'count' (for example 'count:sum') at position 5.\n  count\n       ^",
-        "latency_ms": 1043.2
+        "latency_ms": 1033.6
       },
       "q09-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1032.4
+        "latency_ms": 1036.2
       },
       "q09-en": {
         "correct": false,
@@ -856,105 +878,105 @@
           "count_distinct"
         ],
         "error": "Cannot parse metric 'count_distinct': expected ':' and an aggregation after 'count_distinct' (for example 'count_distinct:sum') at position 14.\n  count_distinct\n                ^",
-        "latency_ms": 951.8
+        "latency_ms": 949.5
       },
       "q10-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1876.7
+        "latency_ms": 1869.1
       },
       "q10-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1627.7
+        "latency_ms": 1626.5
       },
       "q11-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1549.0
+        "latency_ms": 1544.4
       },
       "q11-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1389.9
+        "latency_ms": 1378.9
       },
       "q12-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 4034.1
+        "latency_ms": 3999.6
       },
       "q12-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2413.3
+        "latency_ms": 2396.2
       },
       "q13-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "Unknown dimension 'segment' for banka.islemler. Available dimensions: islem_id, musteri_id, tutar, para_birimi, islem_turu, durum, islem_tarihi, kanal. Call list_metrics('banka.islemler') for the full model.",
-        "latency_ms": 1954.9
+        "latency_ms": 1932.9
       },
       "q13-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "Unknown measure 'tutar' for banka.musteriler. Available measures: *, musteri_id, ad_soyad, eposta, sube_kodu, segment, acilis_tarihi. Call list_metrics('banka.musteriler') for the full model.",
-        "latency_ms": 1983.4
+        "latency_ms": 1956.0
       },
       "q14-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2085.2
+        "latency_ms": 2052.0
       },
       "q14-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2102.0
+        "latency_ms": 2092.1
       },
       "q15-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "order_by must be a single column name, got [{'column': 'tutar', 'direction': 'desc'}]. Prefix it with '-' to sort descending, e.g. order_by='-revenue_sum'.",
-        "latency_ms": 1612.1
+        "latency_ms": 1604.2
       },
       "q15-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1205.0
+        "latency_ms": 1196.9
       },
       "q16-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "order_by must be a single column name, got {'metric': 'islem_id:count', 'direction': 'desc'}. Prefix it with '-' to sort descending, e.g. order_by='-revenue_sum'.",
-        "latency_ms": 2526.8
+        "latency_ms": 2516.8
       },
       "q16-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "order_by must be a single column name, got ['islem_id:desc']. Prefix it with '-' to sort descending, e.g. order_by='-revenue_sum'.",
-        "latency_ms": 1867.7
+        "latency_ms": 1859.0
       },
       "q17-tr": {
         "correct": false,
@@ -963,7 +985,7 @@
           "count"
         ],
         "error": "Cannot parse metric 'count': expected ':' and an aggregation after 'count' (for example 'count:sum') at position 5.\n  count\n       ^",
-        "latency_ms": 1558.2
+        "latency_ms": 1568.2
       },
       "q17-en": {
         "correct": false,
@@ -972,49 +994,49 @@
           "count"
         ],
         "error": "Cannot parse metric 'count': expected ':' and an aggregation after 'count' (for example 'count:sum') at position 5.\n  count\n       ^",
-        "latency_ms": 1505.1
+        "latency_ms": 1491.8
       },
       "q18-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1787.5
+        "latency_ms": 1790.8
       },
       "q18-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1167.2
+        "latency_ms": 1147.5
       },
       "q19-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1418.6
+        "latency_ms": 1420.3
       },
       "q19-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1172.4
+        "latency_ms": 1155.3
       },
       "q20-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "Unknown dimension 'segment' for banka.islemler. Available dimensions: islem_id, musteri_id, tutar, para_birimi, islem_turu, durum, islem_tarihi, kanal. Call list_metrics('banka.islemler') for the full model.",
-        "latency_ms": 1244.0
+        "latency_ms": 1212.4
       },
       "q20-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "Unknown dimension 'segment' for banka.islemler. Available dimensions: islem_id, musteri_id, tutar, para_birimi, islem_turu, durum, islem_tarihi, kanal. Call list_metrics('banka.islemler') for the full model.",
-        "latency_ms": 1234.2
+        "latency_ms": 1209.1
       }
     },
     "lexicon": {
@@ -1023,42 +1045,42 @@
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 10.1
+        "latency_ms": 9.5
       },
       "q01-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 4.7
+        "latency_ms": 4.9
       },
       "q02-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 5.6
+        "latency_ms": 5.4
       },
       "q02-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 4.1
+        "latency_ms": 3.4
       },
       "q03-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3.2
+        "latency_ms": 3.5
       },
       "q03-en": {
-        "correct": false,
+        "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.9
+        "latency_ms": 2.4
       },
       "q04-tr": {
         "correct": false,
@@ -1072,21 +1094,21 @@
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3.1
+        "latency_ms": 3.3
       },
       "q05-tr": {
-        "correct": false,
+        "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3.6
+        "latency_ms": 2.8
       },
       "q05-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.4
+        "latency_ms": 2.8
       },
       "q06-tr": {
         "correct": true,
@@ -1100,28 +1122,28 @@
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.8
+        "latency_ms": 2.6
       },
       "q07-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.2
+        "latency_ms": 2.6
       },
       "q07-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.0
+        "latency_ms": 2.3
       },
       "q08-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.4
+        "latency_ms": 2.5
       },
       "q08-en": {
         "correct": true,
@@ -1131,74 +1153,74 @@
         "latency_ms": 1.9
       },
       "q09-tr": {
-        "correct": false,
+        "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.3
+        "latency_ms": 2.2
       },
       "q09-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1.5
+        "latency_ms": 2.1
       },
       "q10-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1.9
+        "latency_ms": 2.2
       },
       "q10-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1.6
+        "latency_ms": 1.9
       },
       "q11-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 7.8
+        "latency_ms": 6.2
       },
       "q11-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.7
+        "latency_ms": 3.0
       },
       "q12-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 5.1
+        "latency_ms": 4.0
       },
       "q12-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3.3
+        "latency_ms": 3.2
       },
       "q13-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1.5
+        "latency_ms": 2.1
       },
       "q13-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1.7
+        "latency_ms": 1.4
       },
       "q14-tr": {
         "correct": true,
@@ -1212,28 +1234,28 @@
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1.8
+        "latency_ms": 1.5
       },
       "q15-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.4
+        "latency_ms": 2.6
       },
       "q15-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1.6
+        "latency_ms": 1.7
       },
       "q16-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1.2
+        "latency_ms": 1.4
       },
       "q16-en": {
         "correct": false,
@@ -1247,21 +1269,21 @@
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1.5
+        "latency_ms": 1.2
       },
       "q17-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1.2
+        "latency_ms": 1.3
       },
       "q18-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1.4
+        "latency_ms": 1.5
       },
       "q18-en": {
         "correct": false,
@@ -1275,14 +1297,14 @@
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1.8
+        "latency_ms": 1.9
       },
       "q19-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1.7
+        "latency_ms": 1.6
       },
       "q20-tr": {
         "correct": false,
@@ -1296,7 +1318,7 @@
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1.4
+        "latency_ms": 2.0
       }
     },
     "semantic-schema": {
@@ -1305,280 +1327,562 @@
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1641.5
+        "latency_ms": 1642.1
       },
       "q01-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1230.8
+        "latency_ms": 1210.8
       },
       "q02-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1196.6
+        "latency_ms": 1183.2
       },
       "q02-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1177.4
+        "latency_ms": 1189.7
       },
       "q03-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1095.1
+        "latency_ms": 1091.6
       },
       "q03-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1193.7
+        "latency_ms": 1202.7
       },
       "q04-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2173.9
+        "latency_ms": 2141.8
       },
       "q04-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1906.7
+        "latency_ms": 1911.8
       },
       "q05-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1484.7
+        "latency_ms": 1491.4
       },
       "q05-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1482.4
+        "latency_ms": 1488.1
       },
       "q06-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1198.5
+        "latency_ms": 1190.1
       },
       "q06-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1733.9
+        "latency_ms": 1738.8
       },
       "q07-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1829.6
+        "latency_ms": 1831.3
       },
       "q07-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "Cannot order by 'tutar': it is not one of this query's columns (tutar_sum).",
-        "latency_ms": 1587.0
+        "latency_ms": 1587.9
       },
       "q08-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1201.7
+        "latency_ms": 1194.0
       },
       "q08-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1530.6
+        "latency_ms": 1537.6
       },
       "q09-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1287.2
+        "latency_ms": 1283.2
       },
       "q09-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1243.8
+        "latency_ms": 1248.8
       },
       "q10-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1293.3
+        "latency_ms": 1237.7
       },
       "q10-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2012.9
+        "latency_ms": 1968.0
       },
       "q11-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1818.1
+        "latency_ms": 1757.6
       },
       "q11-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1791.4
+        "latency_ms": 1775.1
       },
       "q12-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2085.7
+        "latency_ms": 2083.8
       },
       "q12-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1758.1
+        "latency_ms": 1776.8
       },
       "q13-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1802.7
+        "latency_ms": 1793.0
       },
       "q13-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1852.8
+        "latency_ms": 1798.7
       },
       "q14-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1865.9
+        "latency_ms": 1850.1
       },
       "q14-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1858.9
+        "latency_ms": 1890.2
       },
       "q15-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1533.1
+        "latency_ms": 1543.3
       },
       "q15-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1523.1
+        "latency_ms": 1557.8
       },
       "q16-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1889.1
+        "latency_ms": 1955.5
       },
       "q16-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1901.7
+        "latency_ms": 1982.2
       },
       "q17-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1237.7
+        "latency_ms": 1316.5
       },
       "q17-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1577.4
+        "latency_ms": 1658.2
       },
       "q18-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1969.1
+        "latency_ms": 2121.8
       },
       "q18-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1997.1
+        "latency_ms": 2182.2
       },
       "q19-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1651.8
+        "latency_ms": 1870.7
       },
       "q19-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1667.6
+        "latency_ms": 1929.6
       },
       "q20-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2054.8
+        "latency_ms": 2424.7
       },
       "q20-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2068.0
+        "latency_ms": 2488.2
+      }
+    },
+    "lexicon+repair": {
+      "q01-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 2184.2
+      },
+      "q01-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 1321.5
+      },
+      "q02-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 1666.0
+      },
+      "q02-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 1425.8
+      },
+      "q03-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 1206.3
+      },
+      "q03-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 1243.0
+      },
+      "q04-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 1365.4
+      },
+      "q04-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 1464.9
+      },
+      "q05-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 2060.1
+      },
+      "q05-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 1561.0
+      },
+      "q06-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 1677.9
+      },
+      "q06-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 2612.9
+      },
+      "q07-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 1979.4
+      },
+      "q07-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 1983.9
+      },
+      "q08-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 1669.6
+      },
+      "q08-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 1500.6
+      },
+      "q09-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 1833.9
+      },
+      "q09-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 1806.0
+      },
+      "q10-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 2093.9
+      },
+      "q10-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 2094.0
+      },
+      "q11-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 2787.6
+      },
+      "q11-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 2946.0
+      },
+      "q12-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 3322.4
+      },
+      "q12-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 3968.5
+      },
+      "q13-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 3739.0
+      },
+      "q13-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 4409.0
+      },
+      "q14-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 2890.1
+      },
+      "q14-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 2800.9
+      },
+      "q15-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 3211.1
+      },
+      "q15-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 2058.0
+      },
+      "q16-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "Cannot order by 'count': it is not one of this query's columns (ad_soyad_count, musteri_id_sum).",
+        "latency_ms": 3047.2
+      },
+      "q16-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 2800.2
+      },
+      "q17-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 2006.8
+      },
+      "q17-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 2259.0
+      },
+      "q18-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 1782.0
+      },
+      "q18-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 2467.2
+      },
+      "q19-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 2078.5
+      },
+      "q19-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 1436.4
+      },
+      "q20-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 2005.6
+      },
+      "q20-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 2019.6
       }
     }
   }

@@ -13,7 +13,7 @@
       },
       "exact_match": 0.1,
       "hallucination_rate": 0.325,
-      "median_latency_ms": 8948.6
+      "median_latency_ms": 2863.8
     },
     {
       "name": "catalog",
@@ -24,7 +24,7 @@
       },
       "exact_match": 0.15,
       "hallucination_rate": 0.275,
-      "median_latency_ms": 7346.8
+      "median_latency_ms": 3725.9
     },
     {
       "name": "semantic",
@@ -35,78 +35,100 @@
       },
       "exact_match": 0.0,
       "hallucination_rate": 0.025,
-      "median_latency_ms": 8666.5
+      "median_latency_ms": 4732.9
     },
     {
       "name": "lexicon",
       "accuracy": {
-        "point": 0.45,
-        "low": 0.3070530781090492,
-        "high": 0.6017090820106795
+        "point": 0.525,
+        "low": 0.3749736210669247,
+        "high": 0.670645298873211
       },
       "exact_match": 0.0,
       "hallucination_rate": 0.0,
-      "median_latency_ms": 3.2
+      "median_latency_ms": 2.5
     },
     {
       "name": "semantic-schema",
       "accuracy": {
-        "point": 0.375,
-        "low": 0.2422297916723327,
-        "high": 0.5296756086269889
+        "point": 0.4,
+        "low": 0.26348325684291923,
+        "high": 0.554041063396538
       },
       "exact_match": 0.0,
       "hallucination_rate": 0.0,
-      "median_latency_ms": 16115.9
+      "median_latency_ms": 8365.1
+    },
+    {
+      "name": "lexicon+repair",
+      "accuracy": {
+        "point": 0.7,
+        "low": 0.5456998118185505,
+        "high": 0.8192515477025347
+      },
+      "exact_match": 0.0,
+      "hallucination_rate": 0.0,
+      "median_latency_ms": 7908.7
     }
   ],
   "comparisons": [
     {
-      "first": "semantic-schema",
+      "first": "lexicon+repair",
       "second": "raw",
-      "gap_points": -7.5,
-      "only_first": 4,
-      "only_second": 7,
-      "both": 11,
-      "neither": 18,
-      "discordant": 11,
-      "p_value": 0.548828125
+      "gap_points": 25.0,
+      "only_first": 16,
+      "only_second": 6,
+      "both": 12,
+      "neither": 6,
+      "discordant": 22,
+      "p_value": 0.052478790283203125
     },
     {
-      "first": "semantic-schema",
+      "first": "lexicon+repair",
       "second": "catalog",
-      "gap_points": -37.5,
-      "only_first": 0,
-      "only_second": 15,
-      "both": 15,
-      "neither": 10,
-      "discordant": 15,
-      "p_value": 6.103515625e-05
+      "gap_points": -5.0,
+      "only_first": 6,
+      "only_second": 8,
+      "both": 22,
+      "neither": 4,
+      "discordant": 14,
+      "p_value": 0.79052734375
     },
     {
-      "first": "semantic-schema",
+      "first": "lexicon+repair",
       "second": "semantic",
-      "gap_points": 0.0,
-      "only_first": 4,
-      "only_second": 4,
-      "both": 11,
-      "neither": 21,
-      "discordant": 8,
-      "p_value": 1.0
+      "gap_points": 32.5,
+      "only_first": 13,
+      "only_second": 0,
+      "both": 15,
+      "neither": 12,
+      "discordant": 13,
+      "p_value": 0.000244140625
     },
     {
-      "first": "semantic-schema",
+      "first": "lexicon+repair",
       "second": "lexicon",
-      "gap_points": -7.5,
-      "only_first": 4,
-      "only_second": 7,
-      "both": 11,
-      "neither": 18,
-      "discordant": 11,
-      "p_value": 0.548828125
+      "gap_points": 17.5,
+      "only_first": 7,
+      "only_second": 0,
+      "both": 21,
+      "neither": 12,
+      "discordant": 7,
+      "p_value": 0.015625
+    },
+    {
+      "first": "lexicon+repair",
+      "second": "semantic-schema",
+      "gap_points": 30.0,
+      "only_first": 12,
+      "only_second": 0,
+      "both": 16,
+      "neither": 12,
+      "discordant": 12,
+      "p_value": 0.00048828125
     }
   ],
-  "verdict": "Stop investing in the DSL: it beats the catalog arm by only -37.5 points (< 5.0). Put the effort into catalog quality and text-to-SQL.",
+  "verdict": "Stop investing in the DSL: it beats the catalog arm by only -5.0 points (< 5.0). Put the effort into catalog quality and text-to-SQL.",
   "grades": {
     "raw": {
       "q01-tr": {
@@ -114,42 +136,42 @@
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 57379.2
+        "latency_ms": 4262.9
       },
       "q01-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 17889.7
+        "latency_ms": 2374.5
       },
       "q02-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 16135.1
+        "latency_ms": 2490.1
       },
       "q02-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 41367.0
+        "latency_ms": 2516.2
       },
       "q03-tr": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 13202.1
+        "latency_ms": 1344.3
       },
       "q03-en": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 8358.5
+        "latency_ms": 1198.3
       },
       "q04-tr": {
         "correct": true,
@@ -159,7 +181,7 @@
           "m"
         ],
         "error": "",
-        "latency_ms": 20439.5
+        "latency_ms": 3296.6
       },
       "q04-en": {
         "correct": true,
@@ -169,21 +191,21 @@
           "m"
         ],
         "error": "",
-        "latency_ms": 5350.7
+        "latency_ms": 3501.9
       },
       "q05-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 4637.7
+        "latency_ms": 2363.6
       },
       "q05-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 4155.4
+        "latency_ms": 2102.0
       },
       "q06-tr": {
         "correct": false,
@@ -193,70 +215,70 @@
           "year"
         ],
         "error": "",
-        "latency_ms": 9013.5
+        "latency_ms": 5841.0
       },
       "q06-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 8949.2
+        "latency_ms": 5224.9
       },
       "q07-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3482.6
+        "latency_ms": 2257.5
       },
       "q07-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2616.2
+        "latency_ms": 2114.0
       },
       "q08-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3740.5
+        "latency_ms": 2385.9
       },
       "q08-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2875.3
+        "latency_ms": 2800.9
       },
       "q09-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2889.7
+        "latency_ms": 2762.5
       },
       "q09-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2271.9
+        "latency_ms": 1898.7
       },
       "q10-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2585.3
+        "latency_ms": 2370.6
       },
       "q10-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3396.4
+        "latency_ms": 2206.4
       },
       "q11-tr": {
         "correct": false,
@@ -266,14 +288,14 @@
           "year"
         ],
         "error": "",
-        "latency_ms": 9025.7
+        "latency_ms": 6092.3
       },
       "q11-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 9667.9
+        "latency_ms": 6401.9
       },
       "q12-tr": {
         "correct": false,
@@ -284,14 +306,14 @@
           "month"
         ],
         "error": "execution failed: Binder Error: No function matches the given name and argument types 'date_sub(DATE, INTERVAL)'. You might need to add explicit type casts.\n\tCandidate functions:\n\tdate_sub(VARCHAR, DATE, DATE) -> BIGINT\n\tdate_sub(VARCHAR, TIME, TIME) -> BIGINT\n\tdate_sub(VARCHAR, TIMESTAMP, TIMESTAMP) -> BIGINT\n\tdate_sub(VARCHAR, TIMESTAMP WITH TIME ZONE, TIMESTAMP WITH TIME ZONE) -> BIGINT\n\n\nLINE 2:   (SUM(CASE WHEN MONTH(islem_tarihi) = MONTH(DATE_SUB(CURRENT_DATE, INTERVAL 1 MONTH)) THEN tutar ELSE...\n                                                     ^",
-        "latency_ms": 16386.9
+        "latency_ms": 7456.6
       },
       "q12-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 17201.7
+        "latency_ms": 7332.8
       },
       "q13-tr": {
         "correct": false,
@@ -301,7 +323,7 @@
           "t2"
         ],
         "error": "",
-        "latency_ms": 11230.7
+        "latency_ms": 4182.4
       },
       "q13-en": {
         "correct": false,
@@ -311,7 +333,7 @@
           "m"
         ],
         "error": "",
-        "latency_ms": 13397.1
+        "latency_ms": 3452.6
       },
       "q14-tr": {
         "correct": false,
@@ -321,7 +343,7 @@
           "within"
         ],
         "error": "",
-        "latency_ms": 9514.3
+        "latency_ms": 3412.0
       },
       "q14-en": {
         "correct": false,
@@ -331,21 +353,21 @@
           "within"
         ],
         "error": "",
-        "latency_ms": 7643.8
+        "latency_ms": 3040.8
       },
       "q15-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 9481.4
+        "latency_ms": 3067.3
       },
       "q15-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 9098.2
+        "latency_ms": 2955.9
       },
       "q16-tr": {
         "correct": false,
@@ -355,7 +377,7 @@
           "m"
         ],
         "error": "",
-        "latency_ms": 15416.8
+        "latency_ms": 5548.8
       },
       "q16-en": {
         "correct": false,
@@ -365,49 +387,49 @@
           "m"
         ],
         "error": "",
-        "latency_ms": 13803.1
+        "latency_ms": 5282.0
       },
       "q17-tr": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3571.1
+        "latency_ms": 1737.9
       },
       "q17-en": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3538.8
+        "latency_ms": 1713.2
       },
       "q18-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 5406.9
+        "latency_ms": 2147.7
       },
       "q18-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 8023.9
+        "latency_ms": 2697.1
       },
       "q19-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 7946.5
+        "latency_ms": 2926.7
       },
       "q19-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 5959.8
+        "latency_ms": 2567.5
       },
       "q20-tr": {
         "correct": true,
@@ -417,7 +439,7 @@
           "m"
         ],
         "error": "",
-        "latency_ms": 9475.5
+        "latency_ms": 3968.5
       },
       "q20-en": {
         "correct": true,
@@ -427,7 +449,7 @@
           "m"
         ],
         "error": "",
-        "latency_ms": 8948.1
+        "latency_ms": 4159.8
       }
     },
     "catalog": {
@@ -436,49 +458,49 @@
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 7910.1
+        "latency_ms": 3971.0
       },
       "q01-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 5091.7
+        "latency_ms": 2160.3
       },
       "q02-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 5880.6
+        "latency_ms": 2403.1
       },
       "q02-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 5360.1
+        "latency_ms": 2643.5
       },
       "q03-tr": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2321.2
+        "latency_ms": 1443.6
       },
       "q03-en": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2166.0
+        "latency_ms": 1297.9
       },
       "q04-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 8479.1
+        "latency_ms": 3277.8
       },
       "q04-en": {
         "correct": true,
@@ -488,98 +510,98 @@
           "m"
         ],
         "error": "",
-        "latency_ms": 10724.3
+        "latency_ms": 3921.7
       },
       "q05-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 7724.2
+        "latency_ms": 2471.7
       },
       "q05-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 11771.8
+        "latency_ms": 2501.7
       },
       "q06-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 12852.3
+        "latency_ms": 4949.0
       },
       "q06-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 9978.3
+        "latency_ms": 5096.6
       },
       "q07-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3699.6
+        "latency_ms": 2237.1
       },
       "q07-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 5046.5
+        "latency_ms": 2705.5
       },
       "q08-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 6771.1
+        "latency_ms": 3656.3
       },
       "q08-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 4611.7
+        "latency_ms": 2914.0
       },
       "q09-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 4984.1
+        "latency_ms": 3193.3
       },
       "q09-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 5144.0
+        "latency_ms": 2623.7
       },
       "q10-tr": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 4634.9
+        "latency_ms": 2488.0
       },
       "q10-en": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3608.2
+        "latency_ms": 2457.7
       },
       "q11-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 15996.7
+        "latency_ms": 9984.7
       },
       "q11-en": {
         "correct": false,
@@ -588,7 +610,7 @@
           "i"
         ],
         "error": "",
-        "latency_ms": 12848.0
+        "latency_ms": 8449.3
       },
       "q12-tr": {
         "correct": false,
@@ -599,7 +621,7 @@
           "month"
         ],
         "error": "execution failed: Binder Error: No function matches the given name and argument types 'date_sub(DATE, INTERVAL)'. You might need to add explicit type casts.\n\tCandidate functions:\n\tdate_sub(VARCHAR, DATE, DATE) -> BIGINT\n\tdate_sub(VARCHAR, TIME, TIME) -> BIGINT\n\tdate_sub(VARCHAR, TIMESTAMP, TIMESTAMP) -> BIGINT\n\tdate_sub(VARCHAR, TIMESTAMP WITH TIME ZONE, TIMESTAMP WITH TIME ZONE) -> BIGINT\n\n\nLINE 2:     AVG(CASE WHEN MONTH(islem_tarihi) = MONTH(DATE_SUB(CURRENT_DATE, INTERVAL 1 MONTH)) THEN tutar ELSE...\n                                                      ^",
-        "latency_ms": 14164.3
+        "latency_ms": 9484.7
       },
       "q12-en": {
         "correct": false,
@@ -609,7 +631,7 @@
           "i2"
         ],
         "error": "",
-        "latency_ms": 24281.7
+        "latency_ms": 15111.3
       },
       "q13-tr": {
         "correct": true,
@@ -619,7 +641,7 @@
           "m"
         ],
         "error": "",
-        "latency_ms": 11851.3
+        "latency_ms": 6101.8
       },
       "q13-en": {
         "correct": true,
@@ -629,7 +651,7 @@
           "m"
         ],
         "error": "",
-        "latency_ms": 13492.3
+        "latency_ms": 5631.9
       },
       "q14-tr": {
         "correct": true,
@@ -639,7 +661,7 @@
           "within"
         ],
         "error": "",
-        "latency_ms": 15412.7
+        "latency_ms": 5000.6
       },
       "q14-en": {
         "correct": true,
@@ -649,21 +671,21 @@
           "within"
         ],
         "error": "",
-        "latency_ms": 11985.9
+        "latency_ms": 5158.8
       },
       "q15-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 7235.4
+        "latency_ms": 5081.3
       },
       "q15-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 7458.2
+        "latency_ms": 5022.6
       },
       "q16-tr": {
         "correct": false,
@@ -673,7 +695,7 @@
           "m"
         ],
         "error": "",
-        "latency_ms": 15004.3
+        "latency_ms": 9331.2
       },
       "q16-en": {
         "correct": false,
@@ -683,56 +705,56 @@
           "m"
         ],
         "error": "",
-        "latency_ms": 10844.8
+        "latency_ms": 8021.0
       },
       "q17-tr": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3381.5
+        "latency_ms": 2322.9
       },
       "q17-en": {
         "correct": true,
         "exact_match": true,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3341.7
+        "latency_ms": 2235.5
       },
       "q18-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 4691.1
+        "latency_ms": 3238.1
       },
       "q18-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 4769.1
+        "latency_ms": 3612.8
       },
       "q19-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 6562.9
+        "latency_ms": 4429.9
       },
       "q19-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 6823.9
+        "latency_ms": 3795.6
       },
       "q20-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 10008.9
+        "latency_ms": 5807.1
       },
       "q20-en": {
         "correct": true,
@@ -742,7 +764,7 @@
           "m"
         ],
         "error": "",
-        "latency_ms": 15650.8
+        "latency_ms": 7380.1
       }
     },
     "semantic": {
@@ -751,112 +773,112 @@
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 14379.0
+        "latency_ms": 7187.8
       },
       "q01-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 12776.0
+        "latency_ms": 3450.2
       },
       "q02-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 12758.1
+        "latency_ms": 7746.3
       },
       "q02-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 8793.1
+        "latency_ms": 6055.1
       },
       "q03-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 4596.5
+        "latency_ms": 3448.4
       },
       "q03-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 7487.7
+        "latency_ms": 3132.6
       },
       "q04-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 5731.6
+        "latency_ms": 4115.6
       },
       "q04-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "Unknown dimension 'segment' for banka.islemler. Available dimensions: islem_id, musteri_id, tutar, para_birimi, islem_turu, durum, islem_tarihi, kanal. Call list_metrics('banka.islemler') for the full model.",
-        "latency_ms": 4981.7
+        "latency_ms": 3430.6
       },
       "q05-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 8539.9
+        "latency_ms": 4160.4
       },
       "q05-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 5705.9
+        "latency_ms": 3430.6
       },
       "q06-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 6762.4
+        "latency_ms": 4331.5
       },
       "q06-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 6494.2
+        "latency_ms": 4716.7
       },
       "q07-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 34171.4
+        "latency_ms": 17195.0
       },
       "q07-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 22025.0
+        "latency_ms": 7545.1
       },
       "q08-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 7017.8
+        "latency_ms": 4695.6
       },
       "q08-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 8252.6
+        "latency_ms": 4120.1
       },
       "q09-tr": {
         "correct": false,
@@ -865,168 +887,168 @@
           "count_distinct"
         ],
         "error": "Unknown aggregation 'musteri_id' for measure 'count_distinct'. Allowed: avg, count, count_distinct, max, median, min, sum, weighted_avg.",
-        "latency_ms": 6563.8
+        "latency_ms": 4543.5
       },
       "q09-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "Unknown transform 'count_distinct' at position 0. Available transforms: change, change_pct, cumsum, dense_rank, lag, lead, ntile, percent_rank, rank, time_shift.",
-        "latency_ms": 6281.6
+        "latency_ms": 4529.9
       },
       "q10-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 18262.7
+        "latency_ms": 8910.4
       },
       "q10-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 10062.6
+        "latency_ms": 5745.3
       },
       "q11-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "Unknown aggregation 'cumsum' for measure 'tutar'. Did you mean 'sum'? Allowed: avg, count, count_distinct, max, median, min, sum, weighted_avg.",
-        "latency_ms": 8891.5
+        "latency_ms": 5305.2
       },
       "q11-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 8352.8
+        "latency_ms": 5112.9
       },
       "q12-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 17453.8
+        "latency_ms": 6507.7
       },
       "q12-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 11834.6
+        "latency_ms": 5931.7
       },
       "q13-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "Unknown measure 'tutar' for banka.musteriler. Available measures: *, musteri_id, ad_soyad, eposta, sube_kodu, segment, acilis_tarihi. Call list_metrics('banka.musteriler') for the full model.",
-        "latency_ms": 12428.2
+        "latency_ms": 7346.2
       },
       "q13-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "Unknown measure 'tutar' for banka.musteriler. Available measures: *, musteri_id, ad_soyad, eposta, sube_kodu, segment, acilis_tarihi. Call list_metrics('banka.musteriler') for the full model.",
-        "latency_ms": 19130.4
+        "latency_ms": 6924.5
       },
       "q14-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 7170.8
+        "latency_ms": 4169.0
       },
       "q14-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 15281.7
+        "latency_ms": 3953.8
       },
       "q15-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 13973.0
+        "latency_ms": 6404.6
       },
       "q15-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 6626.8
+        "latency_ms": 4504.7
       },
       "q16-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 16542.5
+        "latency_ms": 7719.1
       },
       "q16-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 16351.2
+        "latency_ms": 6820.6
       },
       "q17-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 21870.0
+        "latency_ms": 5699.6
       },
       "q17-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 22729.3
+        "latency_ms": 4749.1
       },
       "q18-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 8029.6
+        "latency_ms": 4706.1
       },
       "q18-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 11552.6
+        "latency_ms": 7670.0
       },
       "q19-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 6941.1
+        "latency_ms": 4791.4
       },
       "q19-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 6031.9
+        "latency_ms": 4617.4
       },
       "q20-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "Unknown dimension 'segment' for banka.islemler. Available dimensions: islem_id, musteri_id, tutar, para_birimi, islem_turu, durum, islem_tarihi, kanal. Call list_metrics('banka.islemler') for the full model.",
-        "latency_ms": 7532.2
+        "latency_ms": 4402.0
       },
       "q20-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "Unknown dimension 'segment' for banka.islemler. Available dimensions: islem_id, musteri_id, tutar, para_birimi, islem_turu, durum, islem_tarihi, kanal. Call list_metrics('banka.islemler') for the full model.",
-        "latency_ms": 7269.0
+        "latency_ms": 4321.2
       }
     },
     "lexicon": {
@@ -1035,238 +1057,238 @@
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 153.7
+        "latency_ms": 30.5
       },
       "q01-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 5.7
+        "latency_ms": 2.1
       },
       "q02-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 11.9
+        "latency_ms": 2.3
       },
       "q02-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.7
+        "latency_ms": 1.6
       },
       "q03-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 6.0
+        "latency_ms": 2.1
       },
       "q03-en": {
-        "correct": false,
+        "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3.1
+        "latency_ms": 1.3
       },
       "q04-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 13.9
+        "latency_ms": 80.3
       },
       "q04-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 5.3
+        "latency_ms": 8.7
       },
       "q05-tr": {
-        "correct": false,
+        "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 5.7
+        "latency_ms": 2.7
       },
       "q05-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 4.4
+        "latency_ms": 2.0
       },
       "q06-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 11.1
+        "latency_ms": 2.9
       },
       "q06-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3.4
+        "latency_ms": 2.1
       },
       "q07-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3.6
+        "latency_ms": 4.1
       },
       "q07-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.2
+        "latency_ms": 5.0
       },
       "q08-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.4
+        "latency_ms": 2.8
       },
       "q08-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.7
+        "latency_ms": 1.7
       },
       "q09-tr": {
-        "correct": false,
+        "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 5.1
+        "latency_ms": 4.6
       },
       "q09-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.0
+        "latency_ms": 3.4
       },
       "q10-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.9
+        "latency_ms": 5.8
       },
       "q10-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.4
+        "latency_ms": 1.6
       },
       "q11-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 18.7
+        "latency_ms": 23.6
       },
       "q11-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 4.5
+        "latency_ms": 3.6
       },
       "q12-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 16.2
+        "latency_ms": 21.0
       },
       "q12-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 6.3
+        "latency_ms": 3.7
       },
       "q13-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.3
+        "latency_ms": 2.8
       },
       "q13-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.7
+        "latency_ms": 1.8
       },
       "q14-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 5.3
+        "latency_ms": 7.5
       },
       "q14-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.8
+        "latency_ms": 2.0
       },
       "q15-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 4.7
+        "latency_ms": 5.6
       },
       "q15-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.8
+        "latency_ms": 1.9
       },
       "q16-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.1
+        "latency_ms": 2.9
       },
       "q16-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3.0
+        "latency_ms": 1.6
       },
       "q17-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 4.1
+        "latency_ms": 1.5
       },
       "q17-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 1.9
+        "latency_ms": 1.5
       },
       "q18-tr": {
         "correct": false,
@@ -1280,35 +1302,35 @@
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.0
+        "latency_ms": 1.7
       },
       "q19-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.6
+        "latency_ms": 2.1
       },
       "q19-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 3.3
+        "latency_ms": 1.9
       },
       "q20-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.2
+        "latency_ms": 1.9
       },
       "q20-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 2.4
+        "latency_ms": 4.1
       }
     },
     "semantic-schema": {
@@ -1317,280 +1339,562 @@
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 17324.5
+        "latency_ms": 7427.7
       },
       "q01-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 9184.7
+        "latency_ms": 4185.9
       },
       "q02-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 13425.2
+        "latency_ms": 8253.2
       },
       "q02-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 13576.8
+        "latency_ms": 8649.6
       },
       "q03-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 16012.0
+        "latency_ms": 4619.3
       },
       "q03-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 8059.0
+        "latency_ms": 4410.4
       },
       "q04-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 13015.7
+        "latency_ms": 6243.9
       },
       "q04-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 20449.5
+        "latency_ms": 8477.0
       },
       "q05-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 13574.7
+        "latency_ms": 5936.1
       },
       "q05-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 11355.3
+        "latency_ms": 5955.4
       },
       "q06-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 24210.2
+        "latency_ms": 8647.5
       },
       "q06-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 12577.8
+        "latency_ms": 9512.7
       },
       "q07-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
-        "error": "Cannot order by 'tutar': it is not one of this query's columns (islem_id, musteri_id, para_birimi, tutar_max).",
-        "latency_ms": 26521.2
+        "error": "",
+        "latency_ms": 11458.2
       },
       "q07-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "Cannot order by 'tutar': it is not one of this query's columns (tutar_max).",
-        "latency_ms": 14046.0
+        "latency_ms": 7348.7
       },
       "q08-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 11652.3
+        "latency_ms": 7246.4
       },
       "q08-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 11606.6
+        "latency_ms": 7128.5
       },
       "q09-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 18073.6
+        "latency_ms": 6168.4
       },
       "q09-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 20598.9
+        "latency_ms": 5331.0
       },
       "q10-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 26234.1
+        "latency_ms": 7606.5
       },
       "q10-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 23226.6
+        "latency_ms": 9212.4
       },
       "q11-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 30245.9
+        "latency_ms": 11217.0
       },
       "q11-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 22117.8
+        "latency_ms": 12033.2
       },
       "q12-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 17806.4
+        "latency_ms": 11317.6
       },
       "q12-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 19925.9
+        "latency_ms": 10882.9
       },
       "q13-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 39004.6
+        "latency_ms": 7729.9
       },
       "q13-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 42013.9
+        "latency_ms": 10233.2
       },
       "q14-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 17215.1
+        "latency_ms": 7947.0
       },
       "q14-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 16219.7
+        "latency_ms": 8001.3
       },
       "q15-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 11761.9
+        "latency_ms": 6760.8
       },
       "q15-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 12444.6
+        "latency_ms": 8968.0
       },
       "q16-tr": {
-        "correct": false,
+        "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 13658.9
+        "latency_ms": 9228.4
       },
       "q16-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "Cannot order by 'islem_id': it is not one of this query's columns (musteri_id, islem_id_count).",
-        "latency_ms": 13636.7
+        "latency_ms": 10049.9
       },
       "q17-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 16343.6
+        "latency_ms": 10391.6
       },
       "q17-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 15847.6
+        "latency_ms": 9472.9
       },
       "q18-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 17660.6
+        "latency_ms": 9727.6
       },
       "q18-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 14518.1
+        "latency_ms": 8599.9
       },
       "q19-tr": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 11766.8
+        "latency_ms": 7395.9
       },
       "q19-en": {
         "correct": true,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 28951.4
+        "latency_ms": 6814.5
       },
       "q20-tr": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 13947.2
+        "latency_ms": 9112.3
       },
       "q20-en": {
         "correct": false,
         "exact_match": false,
         "hallucinated": [],
         "error": "",
-        "latency_ms": 24039.5
+        "latency_ms": 8978.8
+      }
+    },
+    "lexicon+repair": {
+      "q01-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 8219.7
+      },
+      "q01-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 4371.1
+      },
+      "q02-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 8086.6
+      },
+      "q02-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 7922.3
+      },
+      "q03-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 4780.5
+      },
+      "q03-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 4606.4
+      },
+      "q04-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 7255.3
+      },
+      "q04-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 7985.6
+      },
+      "q05-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 6550.5
+      },
+      "q05-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 6258.2
+      },
+      "q06-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 8115.6
+      },
+      "q06-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 7369.1
+      },
+      "q07-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 7019.4
+      },
+      "q07-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 6597.9
+      },
+      "q08-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 5994.9
+      },
+      "q08-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 6139.1
+      },
+      "q09-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 5787.0
+      },
+      "q09-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 5094.2
+      },
+      "q10-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 7702.6
+      },
+      "q10-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 8421.2
+      },
+      "q11-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 9246.8
+      },
+      "q11-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 9737.2
+      },
+      "q12-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 9036.8
+      },
+      "q12-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 9695.5
+      },
+      "q13-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 11675.4
+      },
+      "q13-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 11607.2
+      },
+      "q14-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 9493.3
+      },
+      "q14-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 8550.7
+      },
+      "q15-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "Cannot order by 'tutar': it is not one of this query's columns (kanal, tutar_sum).",
+        "latency_ms": 7895.1
+      },
+      "q15-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 8852.6
+      },
+      "q16-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 8661.7
+      },
+      "q16-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 8311.9
+      },
+      "q17-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 5842.2
+      },
+      "q17-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 5323.2
+      },
+      "q18-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 8931.4
+      },
+      "q18-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 8919.9
+      },
+      "q19-tr": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 6889.7
+      },
+      "q19-en": {
+        "correct": true,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 6433.2
+      },
+      "q20-tr": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 8100.5
+      },
+      "q20-en": {
+        "correct": false,
+        "exact_match": false,
+        "hallucinated": [],
+        "error": "",
+        "latency_ms": 7874.1
       }
     }
   }

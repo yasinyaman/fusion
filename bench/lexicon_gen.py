@@ -56,11 +56,13 @@ def lexicon_schema(semantic: Any, tables: Sequence[str]) -> dict[str, Any]:
     chooses what a column is *called*, never what columns there are.
     """
     columns, values = _vocabulary(semantic, tables)
-    # `minItems: 0` and nothing required, deliberately. Demanding a word for
-    # every name is what produced the first generation's `tutar: ["tutar",
-    # " tutar"]` — with no way to say "nothing to add", the model filled the
-    # array with inflections of the name, which `lexicon._clean` then threw
-    # away. Letting it decline makes the output mean something.
+    # Every name required, but `minItems: 0`. The two halves matter
+    # separately: demanding a *word* for every name is what produced the first
+    # generation's `tutar: ["tutar", " tutar"]`, since with no way to say
+    # "nothing to add" the model filled the array with inflections that
+    # `lexicon._clean` then discarded. Dropping `required` as well went too
+    # far the other way — the model simply omitted `segment` and `sube_kodu`
+    # rather than considering them. Required, but allowed to be empty.
     words = {
         "type": "array",
         "minItems": 0,
@@ -73,11 +75,13 @@ def lexicon_schema(semantic: Any, tables: Sequence[str]) -> dict[str, Any]:
             "columns": {
                 "type": "object",
                 "properties": {name: dict(words) for name in columns},
+                "required": columns,
                 "additionalProperties": False,
             },
             "values": {
                 "type": "object",
                 "properties": {name: dict(words) for name in values},
+                "required": list(values),
                 "additionalProperties": False,
             },
         },
