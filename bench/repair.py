@@ -58,20 +58,70 @@ def _swap(request: Mapping[str, Any], **changes: Any) -> dict[str, Any]:
     return edited
 
 
+def _as_metric(metric: Any) -> dict[str, Any] | None:
+    """A metric in the structured form, however it arrived.
+
+    The unconstrained arm answers in DSL strings and `to_dsl` accepts them, so
+    a request reaching this module may be in either shape. Parsing is done by
+    the domain rather than by a regex here, so the two cannot disagree about
+    what `cumsum(tutar:sum)` means. Returns None for anything nested deeper
+    than one transform, which the request schema does not offer either.
+    """
+    if isinstance(metric, Mapping):
+        return dict(metric)
+    if not isinstance(metric, str):
+        return None
+    from fusion.domain.metric_dsl import parse_metric
+
+    try:
+        expr = parse_metric(metric)
+    except Exception:
+        return None
+    transform = ""
+    if hasattr(expr, "inner"):
+        transform, expr = expr.name, expr.inner
+    if not hasattr(expr, "measure"):
+        return None
+    structured: dict[str, Any] = {"measure": expr.measure, "aggregation": expr.agg.lower()}
+    if transform:
+        structured["transform"] = transform
+    return structured
+
+
+def _as_dimension(dimension: Any) -> dict[str, Any] | None:
+    """``"islem_tarihi:month"`` -> ``{"column": ..., "grain": ...}``."""
+    if isinstance(dimension, Mapping):
+        return dict(dimension)
+    if not isinstance(dimension, str) or not dimension:
+        return None
+    column, _, grain = dimension.partition(":")
+    return {"column": column, "grain": grain} if grain else {"column": column}
+
+
+def _structured(request: Mapping[str, Any]) -> dict[str, Any]:
+    """The request with its metrics and dimensions in the structured shape.
+
+    Everything downstream edits and rebuilds from this one object. Filtering
+    the string entries out of the *editable* list while `_swap` went on
+    copying the original was the bug: a string dimension was invisible to the
+    editor and still present in the result, so a "one edit" neighbour silently
+    dropped it, and no neighbour ever added to or removed from it.
+    """
+    edited = dict(request)
+    metrics = [_as_metric(m) for m in (request.get("metrics") or [])]
+    dimensions = [_as_dimension(d) for d in (request.get("dimensions") or [])]
+    edited["metrics"] = [m for m in metrics if m is not None]
+    edited["dimensions"] = [d for d in dimensions if d is not None]
+    return edited
+
+
 def _metric_edits(
     request: Mapping[str, Any],
     metrics: Sequence[Any],
     options: Sequence[Mapping[str, Any]],
     dimensions: Sequence[Mapping[str, Any]],
 ) -> Iterator[dict[str, Any]]:
-    """A different measure, aggregation or transform on the first metric.
-
-    Skipped entirely when the metrics are plain DSL strings rather than the
-    structured form: the unconstrained arm answers that way, `to_dsl` accepts
-    it, and reaching for `.get` on a `str` used to raise out of the generator
-    and past the caller's guard. The other edit kinds still apply, so a
-    string-shaped request is measurable rather than a crash.
-    """
+    """A different measure, aggregation or transform on the first metric."""
     if not metrics or not isinstance(metrics[0], Mapping):
         return
     first, rest = metrics[0], list(metrics[1:])
@@ -167,8 +217,9 @@ def neighbours(request: Mapping[str, Any], branch: Mapping[str, Any]) -> Iterato
     before a single filter edit was offered — and a missing condition is the
     commonest repair there is.
     """
-    metrics = list(request.get("metrics") or [])
-    dimensions = [d for d in (request.get("dimensions") or []) if isinstance(d, Mapping)]
+    request = _structured(request)
+    metrics = list(request["metrics"])
+    dimensions = list(request["dimensions"])
     filters = list(request.get("filters") or [])
     properties = branch.get("properties", {})
 

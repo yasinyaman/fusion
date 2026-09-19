@@ -9,8 +9,9 @@ import json
 
 import pytest
 
-from bench.arms import ScriptedModel, TextToSqlArm, _extract_json
+from bench.arms import ScriptedModel, TextToSqlArm
 from bench.dataset import Question, QuestionSet, load_question_set, paired_ids
+from bench.models import extract_json
 from bench.runner import ArmResult, build_report, compare, run_arm, verdict, write_report
 from bench.scoring import Grade
 
@@ -216,29 +217,29 @@ class TestJsonExtraction:
     """Models wrap answers in prose; refusing those measures formatting, not skill."""
 
     def test_a_bare_object(self):
-        assert _extract_json('{"a": 1}') == '{"a": 1}'
+        assert extract_json('{"a": 1}') == '{"a": 1}'
 
     def test_a_fenced_block(self):
-        assert _extract_json('```json\n{"a": 1}\n```') == '{"a": 1}'
+        assert extract_json('```json\n{"a": 1}\n```') == '{"a": 1}'
 
     def test_an_object_buried_in_prose(self):
         reply = 'To find the total, use:\n\n```json\n{"a": 1}\n```\n\nThis sums the column.'
-        assert _extract_json(reply) == '{"a": 1}'
+        assert extract_json(reply) == '{"a": 1}'
 
     def test_nested_objects_are_balanced(self):
         payload = '{"a": {"b": 2}, "c": 3}'
-        assert _extract_json(f"here: {payload} done") == payload
+        assert extract_json(f"here: {payload} done") == payload
 
     def test_a_brace_inside_a_string_does_not_end_the_object(self):
         payload = '{"a": "}{", "b": 1}'
-        assert _extract_json(payload) == payload
+        assert extract_json(payload) == payload
 
     def test_an_escaped_quote_inside_a_string(self):
         payload = '{"a": "say \\"hi\\"", "b": 1}'
-        assert _extract_json(payload) == payload
+        assert extract_json(payload) == payload
 
     def test_no_object_at_all_returns_the_text(self):
-        assert _extract_json("I cannot answer that") == "I cannot answer that"
+        assert extract_json("I cannot answer that") == "I cannot answer that"
 
 
 class TestCliLoader:

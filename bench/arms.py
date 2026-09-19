@@ -63,6 +63,12 @@ class Arm(Protocol):
         ...
 
 
+#: How many proposals `RepairArm` keeps for after-the-fact comparison. Large
+#: enough for any question set, small enough not to be a leak in a long-lived
+#: process.
+MAX_RECORDED_SEEDS = 500
+
+
 def _timed(start: float) -> float:
     return (time.perf_counter() - start) * 1000
 
@@ -325,7 +331,12 @@ class RepairArm:
         )
         self._context = describe_tables(fusion, self._tables, self._schema)
         #: What the lexicon proposed, per question id, so a caller can tell a
-        #: repair that helped from one that did damage.
+        #: repair that helped from one that did damage. Bounded, because this
+        #: is the shape a served copilot would take and an unbounded store of
+        #: every request ever planned would hold filter values read out of
+        #: user data. Questions without an id are not recorded at all: they
+        #: would all collide on one key and report the last seed as every
+        #: question's.
         self.seeds: dict[str, dict[str, Any]] = {}
 
     def prompt_for(self, question: Any, seed: Mapping[str, Any]) -> str:
@@ -344,7 +355,11 @@ class RepairArm:
             seed = self._planner.plan(question.text)
         except Exception as e:
             return Answer(error=f"planning failed: {e}", latency_ms=_timed(start))
-        self.seeds[getattr(question, "id", "")] = seed
+        question_id = getattr(question, "id", "")
+        if question_id:
+            if len(self.seeds) >= MAX_RECORDED_SEEDS:
+                self.seeds.pop(next(iter(self.seeds)))
+            self.seeds[question_id] = seed
         try:
             reply = self._model.complete(self.prompt_for(question, seed), self._schema)
             raw = json.loads(extract_json(reply))
@@ -444,6 +459,8 @@ def describe_tables(
     The catalog arm's context already names them — ``durum: basarili | iptal``
     — so withholding them would compare contexts rather than layers.
     """
+    if not tables:
+        raise ValueError("describe_tables needs at least one table to describe.")
     known = known_values(schema) if schema else {}
     blocks = []
     for table in tables:
@@ -483,11 +500,6 @@ def _named_in(request: Mapping[str, Any], table: str) -> tuple[str, ...]:
         if isinstance(condition, Mapping) and condition.get("column"):
             names.add(str(condition["column"]))
     return tuple(sorted(names))
-
-
-#: Re-exported: this is where a reply gets parsed, even though the scanner
-#: itself lives beside the model adapters now that two modules need it.
-_extract_json = extract_json
 
 
 class ScriptedModel:

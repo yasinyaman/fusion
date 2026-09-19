@@ -178,6 +178,11 @@ class Grade:
     hallucinated: tuple[str, ...] = ()
     error: str = ""
     latency_ms: float = 0.0
+    #: The arm answered with something other than what it was asked for — a
+    #: seeded arm keeping its proposal after the model failed. Carried through
+    #: to the report, because an arm that quietly substitutes is two arms
+    #: reported as one.
+    fell_back: bool = False
 
     @property
     def hallucinated_any(self) -> bool:
@@ -190,6 +195,7 @@ class Grade:
             "hallucinated": list(self.hallucinated),
             "error": self.error,
             "latency_ms": round(self.latency_ms, 1),
+            "fell_back": self.fell_back,
         }
 
 
@@ -236,6 +242,7 @@ def grade(
             error=answer.error,
             latency_ms=answer.latency_ms,
             hallucinated=invented,
+            fell_back=answer.fell_back,
         )
     return Grade(
         correct=rows_equal(answer.rows, expected_rows, ordered=ordered),
@@ -246,6 +253,7 @@ def grade(
         and normalize_sql(answer.sql) == normalize_sql(gold_sql),
         hallucinated=invented,
         latency_ms=answer.latency_ms,
+        fell_back=answer.fell_back,
     )
 
 

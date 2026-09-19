@@ -45,6 +45,14 @@ class ArmResult:
             return 0.0
         return sum(1 for qid in ids if self.grades[qid].exact_match) / len(ids)
 
+    def fallbacks(self, ids: Sequence[str]) -> int:
+        """How many answers were not the arm's own work.
+
+        Non-zero means a seeded arm kept its proposal because the model
+        failed, and the accuracy above is a blend of two arms rather than one.
+        """
+        return sum(1 for qid in ids if self.grades[qid].fell_back)
+
     def median_latency_ms(self, ids: Sequence[str]) -> float:
         """Median, not mean: one timed-out call should not define the number."""
         values = sorted(self.grades[qid].latency_ms for qid in ids)
@@ -158,6 +166,7 @@ class Report:
                     "accuracy": arm.accuracy(self.ids).as_dict(),
                     "exact_match": round(arm.exact_match_rate(self.ids), 3),
                     "hallucination_rate": round(arm.hallucination_rate(self.ids), 3),
+                    "fallbacks": arm.fallbacks(self.ids),
                     "median_latency_ms": round(arm.median_latency_ms(self.ids), 1),
                 }
                 for arm in self.arms
@@ -182,18 +191,27 @@ class Report:
                 f"{len(self.dropped)} dropped because not every arm answered them: "
                 f"{', '.join(self.dropped)}."
             )
+        # The fallback column appears only when something fell back, so a
+        # clean run's report is unchanged — but a run where the model went
+        # away cannot be mistaken for one where it answered.
+        fell_back = {arm.name: arm.fallbacks(self.ids) for arm in self.arms}
+        extra = " Fell back |" if any(fell_back.values()) else ""
         lines += [
             "",
-            "| Arm | Execution accuracy (95% CI) | Hallucinated | Exact match | Median latency |",
-            "|---|---|---|---|---|",
+            "| Arm | Execution accuracy (95% CI) | Hallucinated | Exact match | "
+            f"Median latency |{extra}",
+            "|---|---|---|---|---|" + ("---|" if extra else ""),
         ]
         for arm in self.arms:
-            lines.append(
+            row = (
                 f"| {arm.name} | {arm.accuracy(self.ids)} | "
                 f"{arm.hallucination_rate(self.ids):.1%} | "
                 f"{arm.exact_match_rate(self.ids):.1%} | "
                 f"{arm.median_latency_ms(self.ids):.0f} ms |"
             )
+            if extra:
+                row += f" {fell_back[arm.name]} |"
+            lines.append(row)
         lines += [
             "",
             "## Paired comparisons (McNemar exact)",

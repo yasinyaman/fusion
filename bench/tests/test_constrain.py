@@ -595,3 +595,96 @@ def test_the_vocabulary_can_be_handed_over_instead_of_rediscovered(fusion):
     assert planner.plan("iptal edilen islemlerin sayisi")["filters"] == [
         {"column": "durum", "op": "eq", "value": "iptal"}
     ]
+
+
+# -- what the report has to show -------------------------------------------
+
+
+def test_a_fallback_is_counted_and_shown(fusion):
+    """An arm that substitutes its proposal is two arms reported as one.
+
+    The flag reached `Answer` and stopped there: `run_arm` turned answers into
+    grades and dropped it, so a run where the model failed twenty times read
+    exactly like one where it answered all forty.
+    """
+    from bench.arms import RepairArm
+    from bench.dataset import Question, QuestionSet
+    from bench.runner import build_report, run_arm
+
+    questions = (
+        Question(id="q1", text="Toplam işlem tutarı nedir?", gold={"duckdb": "SELECT 1"}),
+        Question(id="q2", text="Kaç işlem var?", gold={"duckdb": "SELECT 1"}),
+    )
+    arm = RepairArm(
+        "repair", ScriptedModel(["not json", "not json"]), fusion, TABLES, fall_back=True
+    )
+    result = run_arm(arm, questions, {}, "duckdb", [])
+
+    assert result.fallbacks(["q1", "q2"]) == 2
+    assert all(g.fell_back for g in result.grades.values())
+
+    report = build_report(QuestionSet(name="t", questions=questions), "duckdb", [result])
+    assert "Fell back" in report.to_markdown()
+    assert report.as_dict()["arms"][0]["fallbacks"] == 2
+
+
+def test_a_clean_run_shows_no_fallback_column(fusion):
+    """Reports from runs where nothing fell back stay exactly as they were."""
+    from bench.arms import LexiconArm
+    from bench.dataset import Question, QuestionSet
+    from bench.runner import build_report, run_arm
+
+    questions = (Question(id="q1", text="Toplam işlem tutarı nedir?", gold={"duckdb": "SELECT 1"}),)
+    result = run_arm(LexiconArm("lexicon", fusion, TABLES), questions, {}, "duckdb", [])
+
+    assert result.fallbacks(["q1"]) == 0
+    report = build_report(QuestionSet(name="t", questions=questions), "duckdb", [result])
+    assert "Fell back" not in report.to_markdown()
+
+
+# -- the vocabulary is discovered once, and covers every table -------------
+
+
+def test_the_schema_is_read_once_not_rediscovered(fusion, monkeypatch):
+    """Each discovery is a full DSL round trip; three passes was 42 of them.
+
+    Measured by hand when the fix landed and left unguarded, which is exactly
+    how a constructor reorder would put them back.
+    """
+    import bench.constrain as constrain
+    from bench.arms import RepairArm
+
+    calls = {"n": 0}
+    original = constrain.dimension_values
+
+    def counting(*args, **kwargs):
+        calls["n"] += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(constrain, "dimension_values", counting)
+    dimensions = sum(len(fusion.semantic.model_for(t).dimensions) for t in TABLES)
+
+    RepairArm("repair", ScriptedModel([]), fusion, TABLES)
+
+    assert calls["n"] == dimensions, f"{calls['n']} discoveries for {dimensions} dimensions"
+
+
+def test_values_by_table_covers_every_table_it_was_given(fusion):
+    """A table missing from the map gets an empty vocabulary and no error."""
+    from bench.constrain import values_by_table
+
+    many = values_by_table(request_schema(fusion.semantic, TABLES))
+    assert set(many) == set(TABLES)
+
+    # The single-table schema has no `oneOf` and takes the other branch.
+    one = values_by_table(request_schema(fusion.semantic, ["banka.islemler"]))
+    assert set(one) == {"banka.islemler"}
+    assert one["banka.islemler"]["durum"] == ["basarili", "iptal"]
+
+
+def test_describe_tables_refuses_an_empty_list(fusion):
+    """`request_schema` gained this guard; the function beside it did not."""
+    from bench.arms import describe_tables
+
+    with pytest.raises(ValueError, match="at least one table"):
+        describe_tables(fusion, [])

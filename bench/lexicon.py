@@ -480,7 +480,10 @@ def _looks_like_a_key(name: str) -> bool:
 
 
 #: Words that turn a number into a row count rather than part of the question.
-_SUPERLATIVE = r"(?:en (?:yuksek|dusuk|fazla|az|buyuk|kucuk)|top|ilk|highest|lowest)"
+#: The trailing \b is load-bearing: without it `top` matches the start of
+#: `toplam` — "total", the commonest word in a Turkish analytics question — so
+#: "son 3 ayin toplam tutari" read as a three-row cap.
+_SUPERLATIVE = r"(?:en (?:yuksek|dusuk|fazla|az|buyuk|kucuk)|top|ilk|highest|lowest)\b"
 
 #: The number has to be *next to* the superlative, give or take a qualifier —
 #: "en yuksek tutarli 5 islem", "the 5 highest transactions". Taking the first

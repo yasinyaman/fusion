@@ -282,12 +282,14 @@ def test_one_dimension_may_still_be_swapped(schema):
     assert found, "a lone dimension should be swappable"
 
 
-def test_string_metrics_do_not_crash_the_search(schema, run):
+def test_a_string_shaped_request_gets_the_same_neighbourhood(schema, run):
     """The unconstrained arm answers in DSL strings, and `to_dsl` accepts them.
 
-    Reaching for `.get` on a `str` used to raise out of the generator and past
-    `one_edit_away`'s guard, so the copilot metric was uncomputable for exactly
-    the arm whose failures are most interesting.
+    First this raised `AttributeError` from inside the generator. Then the
+    strings were filtered out of the editable list while the request they were
+    copied from kept them, so a "one edit" neighbour silently dropped a
+    breakdown and none was ever added or removed. Both shapes are normalised
+    now, so the arm whose failures are most interesting is measurable.
     """
     start = {
         "table": "banka.islemler",
@@ -296,10 +298,29 @@ def test_string_metrics_do_not_crash_the_search(schema, run):
         "filters": [],
     }
     found = list(neighbours(start, branch_for(schema, "banka.islemler")))
+    kanal = {"column": "kanal"}
 
-    assert found, "dimension and filter edits still apply"
-    # Metric edits need the structured form, so none are offered.
-    assert all(c["metrics"] == ["tutar:sum"] for c in found)
+    assert any(c["metrics"] != [{"measure": "tutar", "aggregation": "sum"}] for c in found)
+    assert any(c["dimensions"] == [] for c in found), "removing the breakdown"
+    assert any(len(c["dimensions"]) == 2 and kanal in c["dimensions"] for c in found), "adding one"
+    # Every neighbour runs, which is what makes it an offer rather than a guess.
+    for candidate in found[:40]:
+        run(candidate)
+
+
+def test_a_string_metric_is_parsed_by_the_domain(schema):
+    """`cumsum(tutar:sum)` means what Fusion says it means, not what a regex does."""
+    from bench.repair import _as_metric
+
+    assert _as_metric("tutar:sum") == {"measure": "tutar", "aggregation": "sum"}
+    assert _as_metric("cumsum(tutar:sum)") == {
+        "measure": "tutar",
+        "aggregation": "sum",
+        "transform": "cumsum",
+    }
+    assert _as_metric("*:count") == {"measure": "*", "aggregation": "count"}
+    # Nothing the schema could not have produced either.
+    assert _as_metric("not a metric at all") is None
 
 
 def test_a_missing_condition_is_offered_before_the_cap(schema):
