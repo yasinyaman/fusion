@@ -14,6 +14,7 @@ from fusion.ports.data_source import (
     SourceFactory,
 )
 from fusion.ports.scheduler import ScheduledJob, Scheduler
+from fusion.ports.semantic_compiler import SemanticCompiler
 from fusion.ports.sql_policy import SqlAnalyzer, SqlValidator
 
 __all__ = [
@@ -24,6 +25,7 @@ __all__ = [
     "QueryCache",
     "ScheduledJob",
     "Scheduler",
+    "SemanticCompiler",
     "SourceFactory",
     "SqlAnalyzer",
     "SqlValidator",

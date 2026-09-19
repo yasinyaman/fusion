@@ -13,6 +13,7 @@ from typing import Any
 
 from fusion.application.planner import FetchPlanner
 from fusion.application.query import QueryService
+from fusion.application.semantic import SemanticService
 from fusion.application.sources import SourceService
 from fusion.application.tool_schemas import TOOL_NAMES
 from fusion.application.views import MaterializedViewService
@@ -53,6 +54,7 @@ class ToolService:
         cache: QueryCache,
         planner: FetchPlanner | None = None,
         analyzer: SqlAnalyzer | None = None,
+        semantic: SemanticService | None = None,
     ) -> None:
         self._query = query
         self._sources = sources
@@ -62,6 +64,7 @@ class ToolService:
         self._cache = cache
         self._planner = planner or query.planner
         self._analyzer = analyzer or query.analyzer
+        self._semantic = semantic
         self._handlers: dict[str, Callable[..., dict[str, Any]]] = {
             name: getattr(self, name) for name in TOOL_NAMES
         }
@@ -314,6 +317,38 @@ class ToolService:
             return self._store.count(ref.full_name)
         except QueryError:
             return -1
+
+    def list_metrics(self, table: str | None = None) -> dict[str, Any]:
+        """The semantic model for a table, or a summary of every table's."""
+        return self._require_semantic().describe(table)
+
+    def query_metrics(
+        self,
+        table: str,
+        metrics: list[str],
+        dimensions: list[str] | None = None,
+        filters: list[dict[str, Any]] | None = None,
+        order_by: str = "",
+        limit: int = MAX_RESULT_ROWS,
+    ) -> dict[str, Any]:
+        """Aggregate and transform without the caller writing any SQL."""
+        result = self._require_semantic().run(
+            table,
+            metrics,
+            dimensions or (),
+            filters or (),
+            order_by=order_by,
+            limit=limit,
+        )
+        return self._format_result(result)
+
+    def _require_semantic(self) -> SemanticService:
+        if self._semantic is None:
+            raise QueryError(
+                "The semantic layer is not available in this build. "
+                "Use query_data or aggregate_data instead."
+            )
+        return self._semantic
 
     def cache_stats(self) -> dict[str, Any]:
         return self._cache.stats()

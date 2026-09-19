@@ -184,6 +184,113 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "list_metrics",
+        "description": (
+            "Show the measures, dimensions, time grains and transforms available for a "
+            "table, with ready-to-use metric expressions. Call this before query_metrics "
+            "so you name measures the table actually has. Without 'table', lists every "
+            "table that has a semantic model."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "table": {
+                    "type": "string",
+                    "description": "Full table name in 'source.table' format (optional)",
+                }
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "query_metrics",
+        "description": (
+            "Answer a metric question without writing SQL. Give the table, the measures "
+            "to compute and the dimensions to break them down by; Fusion aggregates, "
+            "applies window transforms and returns at most 100 rows. A metric is "
+            "'measure:aggregation' (e.g. 'revenue:sum', '*:count', "
+            "'price:weighted_avg(weight=quantity)') and can be wrapped in transforms "
+            "that nest, e.g. 'change_pct(cumsum(revenue:sum))'. Transforms: cumsum, "
+            "change, change_pct, time_shift, lag, lead, rank, percent_rank, dense_rank, "
+            "ntile. Unlike query_data this works on tables far too large to load, "
+            "because only the columns and rows the metrics need are fetched. Call "
+            "list_metrics first to see what a table offers."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "table": {
+                    "type": "string",
+                    "description": "Full table name in 'source.table' format",
+                },
+                "metrics": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Metric expressions, e.g. "
+                        "['revenue:sum', 'change_pct(cumsum(revenue:sum))']"
+                    ),
+                },
+                "dimensions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Columns to group by. A time column may carry a grain: "
+                        "'order_date:month' (day, week, month, quarter, year)."
+                    ),
+                },
+                "filters": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "column": {"type": "string"},
+                            "op": {
+                                "type": "string",
+                                "enum": [
+                                    "eq",
+                                    "ne",
+                                    "gt",
+                                    "gte",
+                                    "lt",
+                                    "lte",
+                                    "like",
+                                    "in",
+                                    "is_null",
+                                ],
+                                "default": "eq",
+                            },
+                            "value": {
+                                "description": (
+                                    "Literal to compare against (string, number, boolean, "
+                                    "or a list for 'in')"
+                                )
+                            },
+                        },
+                        "required": ["column"],
+                    },
+                    "description": (
+                        "Conditions sent to the source, ANDed together. Narrowing a large "
+                        "table with filters is what makes it queryable at all."
+                    ),
+                },
+                "order_by": {
+                    "type": "string",
+                    "description": (
+                        "Output column to sort by; prefix with '-' for descending. "
+                        "Defaults to the first dimension."
+                    ),
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum rows to return (default 100, max 100)",
+                    "default": 100,
+                },
+            },
+            "required": ["table", "metrics"],
+        },
+    },
+    {
         "name": "cache_stats",
         "description": "Show query cache statistics: hit rate, entry count, and memory usage.",
         "parameters": {"type": "object", "properties": {}, "required": []},

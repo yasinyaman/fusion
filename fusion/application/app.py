@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from fusion.application.backup import BackupService
 from fusion.application.query import QueryService
+from fusion.application.semantic import SemanticService
 from fusion.application.settings import Settings
 from fusion.application.sources import SourceService
 from fusion.application.tools import ToolService
@@ -30,6 +31,7 @@ class FusionApp:
     query: QueryService
     views: MaterializedViewService
     backup: BackupService
+    semantic: SemanticService
     tools: ToolService
 
     def schema_context(self, schemas: list[str] | None = None) -> str:

@@ -2,6 +2,80 @@
 
 All notable changes to Fusion OLAP Engine.
 
+## [Unreleased]
+
+### Added
+- **`bench/`: a six-arm benchmark** for whether the semantic layer actually
+  helps — raw text-to-SQL, Warp-catalog-assisted text-to-SQL, the DSL written
+  as free JSON, the DSL with decoding constrained to a schema built from the
+  semantic model, a deterministic word-matching arm with no model in it, and
+  that arm's proposal corrected by a model. All answer the same questions, so
+  the comparison is paired. Grades by result set rather than SQL text, and
+  reports execution accuracy with Wilson intervals, hallucinated-identifier
+  rate, exact match (a diagnostic, not a score) and median latency, compared
+  with McNemar's exact test. The decision thresholds are applied mechanically
+  because they were fixed before the run. 40 questions, half Turkish, over a
+  banking-shaped schema, with gold queries stored per dialect because Oracle
+  and SQL Server genuinely differ where it matters. `bench/` sits outside the
+  `fusion` package, so it affects neither the coverage gate nor the
+  architecture rules. See `bench/README.md` for what the runs established —
+  including that the constrained arm removed all 17 of the unconstrained
+  arm's form errors, and that seeding a model with a deterministic proposal
+  beat every other arm with no hallucination at all
+
+### Fixed
+- `query_metrics` raised `AttributeError` instead of a usable message when a
+  caller passed `order_by` as a list, or `metrics`/`dimensions`/`filters` with
+  the wrong type. Arguments arrive from a language model, so their *types* are
+  as untrusted as their values; every one of these is now a `QueryError`
+  naming the argument and showing the right shape. Found by the benchmark on
+  its first real run.
+
+## [1.2.0] - 2026-09-19
+
+Semantic layer: metric questions get answered without anyone writing SQL, and
+— unlike SQL — they still work on a table too big to load.
+
+### Added
+- **A metric DSL.** `measure:aggregation` (`revenue:sum`, `*:count`,
+  `price:weighted_avg(weight=quantity)`) wrapped in transforms that nest:
+  `change_pct(cumsum(revenue:sum))`. Transforms: `cumsum`, `change`,
+  `change_pct`, `time_shift`, `lag`, `lead`, `rank`, `dense_rank`,
+  `percent_rank`, `ntile`. Parsed by hand in the domain layer over a closed
+  alphabet, so an expression cannot carry a quote escape or a statement
+  separator, and every transform and aggregation is a whitelist lookup.
+- **`query_metrics` and `list_metrics` tools** (10 -> 12), on MCP, REST and the
+  SDK. `list_metrics` returns the model plus ready-to-paste expressions.
+- **Semantic models**, inferred from the discovered schema so the tools work
+  with no configuration, or named explicitly through `FUSION_SEMANTIC_MODEL`
+  (malformed JSON is logged and ignored, never fatal) or `app.semantic.define`.
+- **`FetchPlanner.plan_shape`** and **`QueryService.materialize_for`**: slices
+  can now be planned from a `QueryShape` the caller derived, with no SQL to
+  parse. This is what lets a windowed query be sliced at all — every transform
+  compiles to a window, and `SqlglotAnalyzer` refuses to reason about those, so
+  the planner used to fall back to loading whole tables and refuse anything
+  large. The shape comes from the metric expression, which knows the columns,
+  filters and grain exactly.
+- **`QueryService.run_local`** for SQL this process generated: validated like
+  any other query, but never planned, rewritten or pushed down.
+- **`QueryShape.merge_conservative`**, used to cross-check the generated scan
+  against the planned shape on every metric query. Columns union, predicates
+  intersect, so a disagreement costs a wider slice and a warning rather than
+  silently dropped rows.
+- `SemanticCompiler` port and its sqlglot/DuckDB adapter — the second and last
+  module allowed to import sqlglot.
+
+### Changed
+- `QueryService.sql` takes `local_only`, which stops SQL written for the
+  analytics store being shipped to a source. Correctness, not optimization:
+  pushdown swallows failures and falls back, so a syntax mismatch is merely
+  slow — but interval literals, `NULLS FIRST`/`NULLS LAST` defaults inside a
+  window and integer division parse on both sides and answer differently.
+- The compiler is the first code in Fusion to name a SQL dialect. It generates,
+  parses and validates as DuckDB, and its output is never handed back to the
+  neutral-dialect analyzer, whose round trip rewrites string literals and drops
+  quoting.
+
 ## [1.1.0] - 2026-09-18
 
 Smart transfer: a source table no longer has to fit in memory to be useful.

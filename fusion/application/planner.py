@@ -87,6 +87,37 @@ class FetchPlanner:
         """Decide what to materialize before ``sql`` can run locally."""
         fetch = self.plan_for_sql(sql)
         shape = self._analyzer.analyze(sql)
+        return self._plan(fetch, shape, estimator)
+
+    def plan_shape(self, shape: QueryShape, estimator: SliceEstimator | None = None) -> QueryPlan:
+        """Decide what to materialize for a query that was never SQL text.
+
+        The semantic layer builds its own shape, exactly, from the metric
+        expression — so there is nothing to parse and nothing for the analyzer
+        to give up on. Everything after this point (reuse, slices, semi-joins,
+        the row budget, refusals) is the same code ``plan_query`` runs.
+        """
+        return self._plan(self._fetch_for_shape(shape), shape, estimator)
+
+    def _fetch_for_shape(self, shape: QueryShape) -> FetchPlan:
+        """Resolve a shape's tables against the catalog, as ``plan_for_sql`` does."""
+        plan = FetchPlan(strategy_used="shape")
+        known = set(self._catalog.list_tables())
+        for use in shape.tables:
+            if use.ref.is_view:
+                plan.has_mv_reference = True
+            elif use.ref in known:
+                plan.add(use.ref)
+        if not plan.is_empty():
+            sources = {t.source for t in plan.targets}
+            plan.is_single_source = len(sources) == 1
+            plan.source_name = next(iter(sources)) if plan.is_single_source else None
+            plan.all_targets_unloaded = all(not self._catalog.is_loaded(t) for t in plan.targets)
+        return plan
+
+    def _plan(
+        self, fetch: FetchPlan, shape: QueryShape, estimator: SliceEstimator | None
+    ) -> QueryPlan:
         if fetch.is_empty():
             return QueryPlan(fetch=fetch, shape=shape)
 

@@ -97,6 +97,35 @@ def create_mcp_server(fusion: FusionApp, name: str = "fusion") -> Any:
         )
 
     @server.tool()
+    def list_metrics(table: str | None = None) -> str:
+        """Measures, dimensions, grains and transforms available for a table."""
+        return _dump(tools.execute("list_metrics", {"table": table}))
+
+    @server.tool()
+    def query_metrics(
+        table: str,
+        metrics: list[str],
+        dimensions: list[str] | None = None,
+        filters: list[dict] | None = None,
+        order_by: str = "",
+        limit: int = 100,
+    ) -> str:
+        """Answer a metric question without writing SQL (see list_metrics first)."""
+        return _dump(
+            tools.execute(
+                "query_metrics",
+                {
+                    "table": table,
+                    "metrics": metrics,
+                    "dimensions": dimensions,
+                    "filters": filters,
+                    "order_by": order_by,
+                    "limit": limit,
+                },
+            )
+        )
+
+    @server.tool()
     def cache_stats() -> str:
         """Show query cache statistics: hit rate, entry count, memory usage."""
         return _dump(tools.execute("cache_stats"))

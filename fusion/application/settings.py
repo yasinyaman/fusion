@@ -9,7 +9,15 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from fusion.domain.models import RefreshSpec
+from fusion.domain.errors import SchemaError
+from fusion.domain.measures import (
+    ROW_MEASURE,
+    Dimension,
+    Measure,
+    SemanticModel,
+    normalize_agg,
+)
+from fusion.domain.models import RefreshSpec, coerce_ref
 from fusion.domain.policy import MaterializationPolicy
 
 logger = logging.getLogger(__name__)
@@ -80,6 +88,8 @@ class Settings:
     # A table listed here is refreshed incrementally (only rows above the
     # highest watermark already loaded); everything else is re-fetched whole.
     refresh_config: str = ""
+    # JSON: {"source.table": {"measures": [...], "dimensions": [...]}}
+    semantic_model: str = ""
 
     # Cache
     cache_ttl: int = 300
@@ -140,6 +150,7 @@ class Settings:
             semi_join_max_keys=int(get("FUSION_SEMI_JOIN_MAX_KEYS", "50000")),
             in_chunk_size=int(get("FUSION_IN_CHUNK_SIZE", "1000")),
             refresh_config=get("FUSION_REFRESH_CONFIG", ""),
+            semantic_model=get("FUSION_SEMANTIC_MODEL", ""),
             cache_ttl=int(get("FUSION_CACHE_TTL", "300")),
             cache_max_entries=int(get("FUSION_CACHE_MAX_ENTRIES", "500")),
             api_key=get("FUSION_API_KEY", ""),
@@ -211,6 +222,31 @@ class Settings:
             specs[str(name)] = spec
         return specs
 
+    def semantic_models(self) -> dict[str, SemanticModel]:
+        """Explicit semantic models, keyed by ``source.table``.
+
+        Same posture as :meth:`refresh_specs`: a malformed value is logged and
+        ignored rather than fatal, because a table with no configured model
+        still gets an inferred one and stays queryable.
+        """
+        if not self.semantic_model.strip():
+            return {}
+        try:
+            parsed = json.loads(self.semantic_model)
+        except ValueError as e:
+            logger.error("FUSION_SEMANTIC_MODEL is not valid JSON, ignoring it: %s", e)
+            return {}
+        if not isinstance(parsed, dict):
+            logger.error("FUSION_SEMANTIC_MODEL must be a JSON object, ignoring it")
+            return {}
+        models: dict[str, SemanticModel] = {}
+        for name, raw in parsed.items():
+            try:
+                models[str(name)] = semantic_model_from(str(name), raw)
+            except (SchemaError, TypeError, ValueError) as e:
+                logger.error("Ignoring semantic model for '%s': %s", name, e)
+        return models
+
     def warp_http_defaults(self) -> dict[str, Any]:
         """Auth/resilience/timeout defaults merged under every Warp source config."""
         return {
@@ -257,4 +293,51 @@ def refresh_spec_from(raw: Any) -> RefreshSpec | None:
     return RefreshSpec(
         watermark_column=str(raw.get("watermark_column", "") or ""),
         key_columns=tuple(str(k) for k in keys),
+    )
+
+
+def semantic_model_from(table: str, raw: Any) -> SemanticModel:
+    """Build a SemanticModel from a config mapping.
+
+    A measure is ``{"name", "column", "agg"?, "numeric"?, "description"?}`` and
+    a dimension ``{"name", "column", "temporal"?, "description"?}``; a bare
+    string is shorthand for a column of the same name. The row measure is added
+    automatically, so ``*:count`` works against a configured model too.
+
+    Raises:
+        ValueError: On a malformed entry, so the caller can log and skip it.
+    """
+    if not isinstance(raw, Mapping):
+        raise ValueError("expected an object")
+    ref = coerce_ref(table)
+    measures = [Measure(name=ROW_MEASURE, column=ROW_MEASURE, default_agg="COUNT")]
+    for entry in raw.get("measures") or ():
+        spec = {"name": entry, "column": entry} if isinstance(entry, str) else entry
+        if not isinstance(spec, Mapping) or not spec.get("name"):
+            raise ValueError(f"malformed measure {entry!r}")
+        column = str(spec.get("column") or spec["name"])
+        measures.append(
+            Measure(
+                name=str(spec["name"]),
+                column=column,
+                default_agg=normalize_agg(str(spec.get("agg", "SUM")), str(spec["name"])),
+                numeric=bool(spec.get("numeric", True)),
+                description=str(spec.get("description", "")),
+            )
+        )
+    dimensions = []
+    for entry in raw.get("dimensions") or ():
+        spec = {"name": entry, "column": entry} if isinstance(entry, str) else entry
+        if not isinstance(spec, Mapping) or not spec.get("name"):
+            raise ValueError(f"malformed dimension {entry!r}")
+        dimensions.append(
+            Dimension(
+                name=str(spec["name"]),
+                column=str(spec.get("column") or spec["name"]),
+                temporal=bool(spec.get("temporal", False)),
+                description=str(spec.get("description", "")),
+            )
+        )
+    return SemanticModel(
+        ref=ref, measures=tuple(measures), dimensions=tuple(dimensions), source="configured"
     )

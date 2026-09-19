@@ -73,7 +73,7 @@ fusion/
 │   ├── query.py                    # QueryService: validate → cache → plan → pushdown | slices → rewrite → execute
 │   ├── views.py                    # MaterializedViewService (loads referenced tables before CREATE TABLE AS)
 │   ├── backup.py                   # BackupService (export dir for in-memory, snapshot file for file DBs)
-│   ├── tools.py                    # ToolService: the 10 tools + execute() dispatch
+│   ├── tools.py                    # ToolService: the 12 tools + execute() dispatch
 │   ├── tool_schemas.py             # TOOL_DEFINITIONS, TOOL_NAMES, get_openai_tools(), get_mcp_tools()
 │   └── app.py                      # FusionApp container + close()
 ├── adapters/
@@ -100,8 +100,8 @@ tests/
 
 ## Key Classes
 
-- `FusionApp` — assembled application: `settings`, `catalog`, `store`, `cache`, `scheduler`, `sources`, `query`, `views`, `backup`, `tools`; `close()` stops timers and closes sources/store
-- `ToolService` — the 10 LLM tools; `execute(name, arguments)` is the universal dispatch and turns errors into `{"error": ...}`
+- `FusionApp` — assembled application: `settings`, `catalog`, `store`, `cache`, `scheduler`, `sources`, `query`, `views`, `backup`, `semantic`, `tools`; `close()` stops timers and closes sources/store
+- `ToolService` — the 12 LLM tools; `execute(name, arguments)` is the universal dispatch and turns errors into `{"error": ...}`
 - `QueryService` — the SQL pipeline; `sql(query, use_cache, cache_ttl, auto_load, params)`
 - `SourceService` — owns connected `DataSource`s; `ensure_loaded(refs)` materializes tables through the store
 - `MaterializedViewService` — `mv_{name}` tables, scheduled refresh, `describe()`
@@ -120,6 +120,12 @@ tests/
 - **`create_table_as` is the only non-SELECT path** and is reachable only from `MaterializedViewService` for `mv_*` tables.
 - **Guardrails are mandatory for user SQL:** `SqlValidator.validate()` runs before any query; only `exp.Query` statements pass, forbidden file/network functions are denied, and the store latch is the backstop.
 - **Rows travel as `RowSet`** (columns + tuples). pandas/Arrow only inside adapters and `sdk/formats.py`.
+- **The semantic layer plans from the metric expression, not from SQL.** Every
+  transform compiles to a window, which makes `SqlglotAnalyzer.analyze` give up
+  and the planner load whole tables; `SemanticQuery.query_shape()` states the
+  columns, filters and grain exactly instead, and `FetchPlanner.plan_shape`
+  slices from that. Compiled SQL is generated for DuckDB, runs through
+  `run_local` (validated, never planned or rewritten), and is never pushed down.
 - **Tool results are capped at 100 rows**; result dict keys are `columns, rows, row_count, truncated, execution_time_ms, from_cache`.
 - **Identifiers from LLMs are regex-validated** and columns are checked against the catalog; `search_data` binds its value as a `?` parameter.
 - **Pushdown** happens only for single-source queries whose tables are all unloaded and reference no `mv_*` table; a failed pushdown falls back to local execution, and a Warp that refuses raw SQL (403) turns it off for that source.

@@ -205,7 +205,7 @@ class TestLegacyWarp:
 class TestRestApi:
     def test_health_and_tools(self, client):
         assert client.get("/health").json()["status"] == "healthy"
-        assert client.get("/tools").json()["count"] == 10
+        assert client.get("/tools").json()["count"] == 12
         assert client.get("/readiness").status_code == 200
 
     def test_sources_and_schema(self, client):
@@ -434,3 +434,123 @@ class TestIncrementalRefreshOverWarp:
             assert result.rows == [(3,)] and result.from_cache is False
         finally:
             app.close()
+
+
+class TestSemanticLayer:
+    """Metric questions, answered on a table far too big to load."""
+
+    def _exports(self, transport):
+        return [(m, u, p) for m, u, p in transport.requests if u.endswith("/export")]
+
+    def test_a_windowed_query_written_as_sql_is_refused(self, big_app):
+        # The behaviour the semantic layer exists to fix, pinned: the analyzer
+        # gives up on a CTE with a window, so the planner cannot slice and the
+        # 9M-row table is refused — even though the flat equivalent works.
+        flat = big_app.query.sql(
+            "SELECT status, SUM(amount) AS s FROM ecommerce.orders "
+            "WHERE status = 'completed' GROUP BY status"
+        )
+        assert flat.row_count == 1
+
+        with pytest.raises(QueryError) as error:
+            big_app.query.sql(
+                "WITH b AS (SELECT status, SUM(amount) AS s FROM ecommerce.orders "
+                "WHERE status = 'completed' GROUP BY status) "
+                "SELECT status, SUM(s) OVER (ORDER BY status) AS running FROM b"
+            )
+        assert "9,000,000 rows estimated" in str(error.value)
+
+    def test_the_same_question_as_a_metric_is_answered(self, big_app, big_transport):
+        # Identical shape, identical filter, and it works: the shape came from
+        # the metric expression instead of from parsing SQL.
+        result = big_app.tools.query_metrics(
+            table="ecommerce.orders",
+            metrics=["cumsum(amount:sum)"],
+            dimensions=["status"],
+            filters=[{"column": "status", "op": "eq", "value": "completed"}],
+        )
+        assert "error" not in result
+        assert result["columns"] == ["status", "cumsum_amount_sum"]
+        assert result["row_count"] == 1
+        # Only the matching rows and the needed columns crossed the wire.
+        params = self._exports(big_transport)[-1][2]
+        assert params["filter[status][eq]"] == "completed"
+        assert set(params["fields"].split(",")) == {"amount", "status"}
+        assert not big_app.catalog.is_loaded("ecommerce.orders")
+
+    def test_nested_transforms_over_a_slice(self, big_app):
+        result = big_app.tools.query_metrics(
+            table="ecommerce.orders",
+            metrics=["change_pct(cumsum(amount:sum))", "*:count"],
+            dimensions=["status"],
+            filters=[{"column": "amount", "op": "gt", "value": 50}],
+        )
+        assert "error" not in result
+        assert result["columns"] == ["status", "change_pct_cumsum_amount_sum", "count"]
+        assert result["row_count"] >= 1
+
+    def test_an_unfiltered_metric_on_a_huge_table_is_still_refused(self, big_app):
+        # The refusal is the planner's, so it keeps naming the size and the
+        # ways forward rather than failing somewhere in the compiler.
+        result = big_app.tools.execute(
+            "query_metrics",
+            {"table": "ecommerce.orders", "metrics": ["amount:sum"], "dimensions": ["status"]},
+        )
+        assert "9,000,000 rows estimated" in result["error"]
+
+    def test_list_metrics_describes_what_can_be_asked(self, big_app):
+        described = big_app.tools.list_metrics(table="ecommerce.orders")
+        assert described["table"] == "ecommerce.orders"
+        assert "amount" in [m["name"] for m in described["measures"]]
+        assert "status" in [d["name"] for d in described["dimensions"]]
+        assert {t["name"] for t in described["transforms"]} >= {"cumsum", "time_shift"}
+        assert "amount:sum" in described["examples"]
+
+    def test_list_metrics_without_a_table_lists_them_all(self, big_app):
+        described = big_app.tools.list_metrics()
+        assert "ecommerce.orders" in [t["table"] for t in described["tables"]]
+
+    def test_a_bad_metric_is_an_actionable_error_not_a_crash(self, big_app):
+        assert (
+            "Did you mean 'cumsum'?"
+            in big_app.tools.execute(
+                "query_metrics",
+                {"table": "ecommerce.orders", "metrics": ["cumsun(amount:sum)"]},
+            )["error"]
+        )
+        assert (
+            "Did you mean 'amount'?"
+            in big_app.tools.execute(
+                "query_metrics",
+                {"table": "ecommerce.orders", "metrics": ["amont:sum"]},
+            )["error"]
+        )
+
+    def test_an_unknown_table_names_the_known_ones(self, big_app):
+        result = big_app.tools.execute(
+            "query_metrics", {"table": "ecommerce.nope", "metrics": ["*:count"]}
+        )
+        assert "ecommerce.orders" in result["error"]
+
+    def test_the_metric_path_never_pushes_down(self, app_lazy):
+        # DuckDB window SQL must not reach a Postgres/MySQL backend: the
+        # engines disagree on things that parse either way.
+        source = app_lazy.sources.pushdown_source("warp_main")
+        before = len([c for c in source.calls if c[0] == "execute_query"])
+        app_lazy.tools.query_metrics(
+            table="warp_main.orders", metrics=["cumsum(amount:sum)"], dimensions=["product"]
+        )
+        after = [c for c in source.calls if c[0] == "execute_query"]
+        assert len(after) == before
+
+    def test_the_rest_surface_serves_it(self, client):
+        response = client.post(
+            "/tools/query_metrics",
+            json={
+                "table": "ecommerce.orders",
+                "metrics": ["amount:sum"],
+                "dimensions": ["status"],
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["columns"] == ["status", "amount_sum"]

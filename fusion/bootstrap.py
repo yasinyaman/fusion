@@ -13,6 +13,7 @@ from fusion.application.app import FusionApp
 from fusion.application.backup import BackupService
 from fusion.application.planner import FetchPlanner
 from fusion.application.query import QueryService
+from fusion.application.semantic import SemanticService
 from fusion.application.settings import Settings
 from fusion.application.sources import SourceService
 from fusion.application.tools import ToolService
@@ -22,6 +23,7 @@ from fusion.ports.analytics_store import AnalyticsStore
 from fusion.ports.cache import QueryCache
 from fusion.ports.data_source import DatabaseDiscovery, SourceFactory
 from fusion.ports.scheduler import Scheduler
+from fusion.ports.semantic_compiler import SemanticCompiler
 from fusion.ports.sql_policy import SqlAnalyzer, SqlValidator
 
 
@@ -34,6 +36,7 @@ def build_app(
     source_factory: SourceFactory | None = None,
     validator: SqlValidator | None = None,
     analyzer: SqlAnalyzer | None = None,
+    semantic_compiler: SemanticCompiler | None = None,
     clock: Callable[[], float] = time.time,
 ) -> FusionApp:
     """Build a ready-to-use FusionApp from ``settings`` (defaults: DuckDB in-memory,
@@ -65,6 +68,10 @@ def build_app(
 
         validator = validator or SqlglotValidator()
         analyzer = analyzer or SqlglotAnalyzer()
+    if semantic_compiler is None:
+        from fusion.adapters.outbound.sqlglot_semantic import SqlglotSemanticCompiler
+
+        semantic_compiler = SqlglotSemanticCompiler()
     if source_factory is None:
         from fusion.adapters.outbound.registry import default_registry
 
@@ -99,7 +106,10 @@ def build_app(
         scheduler=scheduler,
         clock=clock,
     )
-    tools = ToolService(query, sources, views, store, catalog, cache, planner, analyzer)
+    semantic = SemanticService(catalog, query, semantic_compiler, settings.semantic_models())
+    tools = ToolService(
+        query, sources, views, store, catalog, cache, planner, analyzer, semantic=semantic
+    )
 
     return FusionApp(
         settings=settings,
@@ -111,6 +121,7 @@ def build_app(
         query=query,
         views=views,
         backup=backup,
+        semantic=semantic,
         tools=tools,
     )
 
