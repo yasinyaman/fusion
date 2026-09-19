@@ -25,6 +25,7 @@ from typing import Any
 
 from bench.constrain import dimension_values
 from bench.lexicon import fold
+from bench.models import extract_json
 
 #: Asked for per name. Enough to cover how a question is actually phrased,
 #: few enough that the model stays specific instead of listing the thesaurus.
@@ -55,9 +56,14 @@ def lexicon_schema(semantic: Any, tables: Sequence[str]) -> dict[str, Any]:
     chooses what a column is *called*, never what columns there are.
     """
     columns, values = _vocabulary(semantic, tables)
+    # `minItems: 0` and nothing required, deliberately. Demanding a word for
+    # every name is what produced the first generation's `tutar: ["tutar",
+    # " tutar"]` — with no way to say "nothing to add", the model filled the
+    # array with inflections of the name, which `lexicon._clean` then threw
+    # away. Letting it decline makes the output mean something.
     words = {
         "type": "array",
-        "minItems": 1,
+        "minItems": 0,
         "maxItems": WORDS_PER_NAME,
         "items": {"type": "string"},
     }
@@ -66,14 +72,12 @@ def lexicon_schema(semantic: Any, tables: Sequence[str]) -> dict[str, Any]:
         "properties": {
             "columns": {
                 "type": "object",
-                "properties": dict.fromkeys(columns, words),
-                "required": columns,
+                "properties": {name: dict(words) for name in columns},
                 "additionalProperties": False,
             },
             "values": {
                 "type": "object",
-                "properties": dict.fromkeys(values, words),
-                "required": list(values),
+                "properties": {name: dict(words) for name in values},
                 "additionalProperties": False,
             },
         },
@@ -122,7 +126,10 @@ def generation_prompt(semantic: Any, tables: Sequence[str]) -> str:
 def generate(model: Any, semantic: Any, tables: Sequence[str]) -> dict[str, list[str]]:
     """Ask a model for the lexicon. Returns ``{"columns": …, "values": …}``."""
     reply = model.complete(generation_prompt(semantic, tables), lexicon_schema(semantic, tables))
-    parsed = json.loads(reply)
+    # Through the same scanner every other reply goes through: a model wraps
+    # its answer in a fence or a sentence often enough that a bare json.loads
+    # here would throw away a generation that had actually succeeded.
+    parsed = json.loads(extract_json(reply))
     return {
         "columns": {k: list(v) for k, v in (parsed.get("columns") or {}).items()},
         "values": {k: list(v) for k, v in (parsed.get("values") or {}).items()},

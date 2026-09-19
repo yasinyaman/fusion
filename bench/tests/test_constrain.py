@@ -476,16 +476,28 @@ def test_the_repair_arm_starts_from_the_lexicons_proposal(fusion):
     assert model.schemas[0] is not None, "the correction was not constrained"
 
 
-def test_a_model_that_cannot_answer_leaves_the_proposal_standing(fusion):
-    """The property that makes seeding worth doing.
+def test_a_model_failure_is_reported_not_swallowed(fusion):
+    """Measurement integrity: the arm must not become the lexicon arm.
 
-    A model failure must not be worse than having no model: the deterministic
-    answer is still there, and it is what gets run.
+    Quietly running the proposal when the model is unreachable would blend two
+    arms into one number, and nothing in the run would show it happened.
     """
     arm, _ = _repair_arm(fusion, ["not json at all"])
     answer = arm.answer(Question(id="q1", text="Toplam işlem tutarı nedir?"))
 
+    assert "model failed" in answer.error
+    assert not answer.fell_back
+
+
+def test_a_seeded_arm_can_keep_its_proposal_and_say_so(fusion):
+    """The product setting: an answer, and a record that it was the fallback."""
+    from bench.arms import RepairArm
+
+    arm = RepairArm("repair", ScriptedModel(["not json"]), fusion, TABLES, fall_back=True)
+    answer = arm.answer(Question(id="q1", text="Toplam işlem tutarı nedir?"))
+
     assert not answer.error
+    assert answer.fell_back
     assert answer.rows and answer.rows[0][0] == pytest.approx(15086.5)
 
 
@@ -539,3 +551,47 @@ def test_a_correction_that_will_not_run_can_be_refused(fusion):
     rescued = guarded.answer(question)
     assert not rescued.error
     assert rescued.rows[0][0] == pytest.approx(15086.5)
+
+
+def test_a_lexicon_is_normalised_on_the_way_in(fusion):
+    """`_clean` was defined and never called, so none of this happened.
+
+    A lexicon is a file a model wrote and a person may edit. A leading space
+    makes an entry dead on arrival — the match anchors on a word boundary —
+    and an entry that only repeats the name contributes nothing while looking
+    as if it did.
+    """
+    from bench.lexicon import LexiconPlanner
+
+    planner = LexiconPlanner(
+        fusion.semantic,
+        TABLES,
+        synonyms={"tutar": [" ciro", "TUTARI", "hacim"]},
+        value_synonyms={"basarili": [" successful "]},
+    )
+
+    # The space is gone, so the word actually matches.
+    assert planner.plan("Toplam ciro nedir?")["metrics"] == [
+        {"measure": "tutar", "aggregation": "sum"}
+    ]
+    assert planner.plan("total amount of successful transactions")["filters"] == [
+        {"column": "durum", "op": "eq", "value": "basarili"}
+    ]
+    # An echo of the name is dropped: the stem match already covers inflection.
+    assert "tutari" not in planner._synonyms["tutar"]
+    assert planner._synonyms["tutar"] == ("ciro", "hacim")
+
+
+def test_the_vocabulary_can_be_handed_over_instead_of_rediscovered(fusion):
+    """Each discovery is a full DSL round trip; the schema already has them."""
+    from bench.constrain import values_by_table
+    from bench.lexicon import LexiconPlanner
+
+    schema = request_schema(fusion.semantic, TABLES)
+    planner = LexiconPlanner(fusion.semantic, TABLES, values=values_by_table(schema))
+
+    assert planner._values["banka.islemler"]["durum"] == ["basarili", "iptal"]
+    # And it still plans from them.
+    assert planner.plan("iptal edilen islemlerin sayisi")["filters"] == [
+        {"column": "durum", "op": "eq", "value": "iptal"}
+    ]

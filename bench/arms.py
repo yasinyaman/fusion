@@ -20,9 +20,11 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Any, Protocol
 
-from bench.constrain import request_schema, to_dsl
+from bench.constrain import request_schema, to_dsl, values_by_table
+from bench.models import extract_json
 from bench.scoring import Answer
 
 
@@ -153,51 +155,10 @@ class SemanticArm:
         self._context = context or self._describe(with_values=constrained)
 
     def _describe(self, with_values: bool = False) -> str:
-        """What the arm tells the model about the tables it may use.
-
-        ``with_values`` spells out each categorical dimension's stored values.
-        The catalog arm's context already names them — ``durum: basarili |
-        iptal`` — so withholding them here would compare contexts rather than
-        layers. They are only available once the schema has been built, which
-        is why this runs after it.
-        """
-        known = self._known_values() if with_values else {}
-        blocks = []
-        for table in self._tables:
-            described = self._fusion.tools.list_metrics(table)
-            measures = ", ".join(m["name"] for m in described.get("measures", []))
-            dimensions = ", ".join(
-                d["name"]
-                + (
-                    f" ({' | '.join(str(v) for v in known[d['name']])})"
-                    if d["name"] in known
-                    else ""
-                )
-                for d in described.get("dimensions", [])
-            )
-            blocks.append(f"Table {table}\n  measures: {measures}\n  dimensions: {dimensions}")
-        transforms = ", ".join(
-            t["name"] for t in self._fusion.tools.list_metrics(self._tables[0])["transforms"]
-        )
-        return (
-            "\n".join(blocks)
-            + f"\nTransforms (optional, wrap a metric): {transforms}"
-            + "\nAggregations: sum, avg, min, max, count, median, count_distinct"
-        )
+        return describe_tables(self._fusion, self._tables, self._schema if with_values else None)
 
     def _known_values(self) -> dict[str, list[Any]]:
-        """The value enums already in the schema, so the two cannot disagree."""
-        schema = self._schema or {}
-        branches = schema.get("oneOf") or [schema]
-        found: dict[str, list[Any]] = {}
-        for branch in branches:
-            filters = branch.get("properties", {}).get("filters", {})
-            for option in filters.get("items", {}).get("oneOf", []):
-                properties = option.get("properties", {})
-                values = properties.get("value", {}).get("enum")
-                if values:
-                    found[properties["column"]["const"]] = values
-        return found
+        return known_values(self._schema)
 
     def prompt_for(self, question: Any) -> str:
         if self._constrained:
@@ -243,7 +204,7 @@ class SemanticArm:
         start = time.perf_counter()
         try:
             reply = self._model.complete(self.prompt_for(question), self._schema)
-            raw = json.loads(_extract_json(reply))
+            raw = json.loads(extract_json(reply))
         except Exception as e:
             return Answer(error=f"model failed: {e}", latency_ms=_timed(start))
 
@@ -349,15 +310,20 @@ class RepairArm:
         self._model = model
         self._fusion = fusion
         self._tables = [tables] if isinstance(tables, str) else list(tables)
+        self._fall_back = fall_back
+        # Built first, then read from three times over: the planner's
+        # vocabulary, the prompt's context and the decoding constraint all
+        # come out of it. Discovering each separately ran the value queries
+        # three times — 42 DSL round trips over 14 dimensions.
+        self._schema = request_schema(fusion.semantic, self._tables)
         self._planner = LexiconPlanner(
             fusion.semantic,
             self._tables,
             synonyms=(lexicon or {}).get("columns"),
             value_synonyms=(lexicon or {}).get("values"),
+            values=values_by_table(self._schema),
         )
-        self._fall_back = fall_back
-        self._schema = request_schema(fusion.semantic, self._tables)
-        self._context = SemanticArm("_", model, fusion, self._tables, constrained=True)._context
+        self._context = describe_tables(fusion, self._tables, self._schema)
         #: What the lexicon proposed, per question id, so a caller can tell a
         #: repair that helped from one that did damage.
         self.seeds: dict[str, dict[str, Any]] = {}
@@ -381,19 +347,28 @@ class RepairArm:
         self.seeds[getattr(question, "id", "")] = seed
         try:
             reply = self._model.complete(self.prompt_for(question, seed), self._schema)
-            raw = json.loads(_extract_json(reply))
-        except Exception:
-            # A model that cannot answer leaves the deterministic proposal
-            # standing, which is the whole point of seeding from one.
-            raw = seed
+            raw = json.loads(extract_json(reply))
+        except Exception as e:
+            # Reported, not swallowed. Quietly running the proposal instead
+            # would turn this arm into the lexicon arm the moment the model
+            # became unreachable, and the run would show no sign of it.
+            if not self._fall_back:
+                return Answer(error=f"model failed: {e}", latency_ms=_timed(start))
+            return self._keep_the_proposal(seed, start)
+
         answer = _execute(
             self._fusion, self._tables, to_dsl(raw), json.dumps(raw, sort_keys=True), start
         )
         if answer.error and self._fall_back and raw != seed:
-            return _execute(
-                self._fusion, self._tables, to_dsl(seed), json.dumps(seed, sort_keys=True), start
-            )
+            return self._keep_the_proposal(seed, start)
         return answer
+
+    def _keep_the_proposal(self, seed: Mapping[str, Any], start: float) -> Answer:
+        """Run the lexicon's proposal, and say that is what happened."""
+        answer = _execute(
+            self._fusion, self._tables, to_dsl(seed), json.dumps(seed, sort_keys=True), start
+        )
+        return replace(answer, fell_back=True)
 
 
 class LexiconArm:
@@ -442,6 +417,52 @@ class LexiconArm:
         )
 
 
+def known_values(schema: Mapping[str, Any] | None) -> dict[str, list[Any]]:
+    """The value enums a request schema carries, per column.
+
+    Read back off the schema rather than rediscovered, so the prompt and the
+    constraint cannot drift — and so the discovery queries run once.
+    """
+    branches = (schema or {}).get("oneOf") or [schema or {}]
+    found: dict[str, list[Any]] = {}
+    for branch in branches:
+        filters = branch.get("properties", {}).get("filters", {})
+        for option in filters.get("items", {}).get("oneOf", []):
+            properties = option.get("properties", {})
+            values = properties.get("value", {}).get("enum")
+            if values:
+                found[properties["column"]["const"]] = values
+    return found
+
+
+def describe_tables(
+    fusion: Any, tables: Sequence[str], schema: Mapping[str, Any] | None = None
+) -> str:
+    """What an arm tells the model about the tables it may use.
+
+    Passing ``schema`` spells out each categorical dimension's stored values.
+    The catalog arm's context already names them — ``durum: basarili | iptal``
+    — so withholding them would compare contexts rather than layers.
+    """
+    known = known_values(schema) if schema else {}
+    blocks = []
+    for table in tables:
+        described = fusion.tools.list_metrics(table)
+        measures = ", ".join(m["name"] for m in described.get("measures", []))
+        dimensions = ", ".join(
+            d["name"]
+            + (f" ({' | '.join(str(v) for v in known[d['name']])})" if d["name"] in known else "")
+            for d in described.get("dimensions", [])
+        )
+        blocks.append(f"Table {table}\n  measures: {measures}\n  dimensions: {dimensions}")
+    transforms = ", ".join(t["name"] for t in fusion.tools.list_metrics(tables[0])["transforms"])
+    return (
+        "\n".join(blocks)
+        + f"\nTransforms (optional, wrap a metric): {transforms}"
+        + "\nAggregations: sum, avg, min, max, count, median, count_distinct"
+    )
+
+
 def _named_in(request: Mapping[str, Any], table: str) -> tuple[str, ...]:
     """The schema names a semantic request referenced.
 
@@ -464,40 +485,9 @@ def _named_in(request: Mapping[str, Any], table: str) -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
-def _extract_json(text: str) -> str:
-    """Pull the JSON object out of a model reply.
-
-    Models wrap the answer in prose and fences as often as not, and refusing
-    those replies would measure formatting compliance rather than whether the
-    arm chose the right metrics. The first balanced ``{...}`` is taken, so a
-    fenced block or an inline object both work.
-    """
-    stripped = text.strip()
-    start = stripped.find("{")
-    if start == -1:
-        return stripped
-    depth = 0
-    in_string = False
-    escaped = False
-    for index in range(start, len(stripped)):
-        char = stripped[index]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return stripped[start : index + 1]
-    return stripped[start:]
+#: Re-exported: this is where a reply gets parsed, even though the scanner
+#: itself lives beside the model adapters now that two modules need it.
+_extract_json = extract_json
 
 
 class ScriptedModel:

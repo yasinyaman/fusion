@@ -210,18 +210,35 @@ def _stem(word: str) -> str:
     return word[:STEM] if len(word) > STEM else word
 
 
-def _mentions(text: str, name: str, extra: Sequence[str] | None = None) -> int:
-    """How strongly the text names this column or table.
+def _agreement(candidate: str, text: str) -> int:
+    """How many characters the text and this name actually agree on.
 
-    The longest matching form wins, which is what keeps ``islem`` from
-    outscoring ``islem_tarihi`` when both are present.
+    The stem is there to survive inflection, not to stand in for the whole
+    name. Scoring a stem hit by the *candidate's* length was the bug: with
+    ``STEM = 5`` the bare word "islem" matched ``islem_turu`` and ``islem_tarihi``
+    and was credited 10 and 12, so "Toplam islem tutari" ranked two columns it
+    never mentioned above ``tutar``, which it did. Measuring the shared prefix
+    instead gives all three 5, which is the truth: one word was recognised.
     """
+    best = 0
+    for found in re.finditer(rf"\b{re.escape(_stem(candidate))}\w*", text):
+        word = found.group(0)
+        shared = 0
+        for mine, theirs in zip(candidate, word, strict=False):
+            if mine != theirs:
+                break
+            shared += 1
+        best = max(best, shared)
+    return best
+
+
+def _mentions(text: str, name: str, extra: Sequence[str] | None = None) -> int:
+    """How strongly the text names this column or table."""
     best = 0
     for candidate in _names_for(name, extra):
         if len(candidate) < 3:
             continue
-        if re.search(rf"\b{re.escape(_stem(candidate))}", text):
-            best = max(best, len(candidate))
+        best = max(best, _agreement(candidate, text))
     return best
 
 
@@ -240,27 +257,41 @@ class LexiconPlanner:
         tables: Sequence[str],
         synonyms: Mapping[str, Sequence[str]] | None = None,
         value_synonyms: Mapping[str, Sequence[str]] | None = None,
+        values: Mapping[str, Mapping[str, Sequence[Any]]] | None = None,
     ) -> None:
         """
         Args:
             synonyms: Business words per column name. Defaults to the
                 hand-written table; a generated lexicon is passed in here.
             value_synonyms: The same, per stored value.
+            values: ``table -> column -> values``, as a request schema already
+                carries. Passed in, discovery is skipped — each one is a full
+                DSL round trip and the answer is the same either way.
         """
         from bench.constrain import dimension_values
 
-        self._synonyms = dict(SYNONYMS if synonyms is None else synonyms)
-        self._value_synonyms = dict(VALUE_SYNONYMS if value_synonyms is None else value_synonyms)
+        # Normalised on the way in, because a lexicon is a file a model wrote
+        # and a person may edit: entries arrive with leading spaces, accents,
+        # or as the name again.
+        self._synonyms = _clean(SYNONYMS if synonyms is None else synonyms)
+        self._value_synonyms = _clean(VALUE_SYNONYMS if value_synonyms is None else value_synonyms)
         self._tables = list(tables)
         self._models = {table: semantic.model_for(table) for table in tables}
-        self._values = {
-            table: {
-                d.as_dict()["name"]: found
-                for d in model.dimensions
-                if (found := dimension_values(semantic, table, d))
+        self._filter_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        if values is not None:
+            self._values = {
+                table: {column: list(found) for column, found in values.get(table, {}).items()}
+                for table in self._tables
             }
-            for table, model in self._models.items()
-        }
+        else:
+            self._values = {
+                table: {
+                    d.as_dict()["name"]: found
+                    for d in model.dimensions
+                    if (found := dimension_values(semantic, table, d))
+                }
+                for table, model in self._models.items()
+            }
 
     def _mentions(self, text: str, name: str) -> int:
         """``_mentions`` with this planner's lexicon applied."""
@@ -289,6 +320,20 @@ class LexiconPlanner:
                     break
         return found
 
+    def _conditions(self, table: str, text: str) -> list[dict[str, Any]]:
+        """`_filters_for`, memoised for the question being planned.
+
+        `plan` reaches it four times for the same pair — twice through
+        `_score`, once choosing a breakdown, once building the request — and
+        each pass re-scans every enumerated value with a regex. The answer
+        depends only on the table and the text, and both are fixed.
+        """
+        cached = self._filter_cache.get((table, text))
+        if cached is None:
+            cached = self._filters_for(table, text)
+            self._filter_cache[(table, text)] = cached
+        return cached
+
     def _score(self, table: str, text: str) -> int:
         """How much of the question this table can account for.
 
@@ -301,7 +346,7 @@ class LexiconPlanner:
         score = sum(self._mentions(text, name) for name in columns)
         score += 3 * self._mentions(text, table.split(".")[-1])
         # A matched value is strong evidence: only one table stores it.
-        return score + 10 * len(self._filters_for(table, text))
+        return score + 10 * len(self._conditions(table, text))
 
     def _measure_and_agg(self, table: str, text: str) -> tuple[str, str]:
         model = self._models[table]
@@ -339,7 +384,7 @@ class LexiconPlanner:
             chosen.append({"column": temporal.as_dict()["name"], "grain": grain})
         if not any(marker in text for marker in BREAKDOWN):
             return chosen
-        filtered = {f["column"] for f in self._filters_for(table, text)}
+        filtered = {f["column"] for f in self._conditions(table, text)}
         scored = [
             (self._mentions(text, d.as_dict()["name"]), d.as_dict()["name"])
             for d in model.dimensions
@@ -379,7 +424,7 @@ class LexiconPlanner:
             "table": table,
             "metrics": [metric],
             "dimensions": dimensions,
-            "filters": self._filters_for(table, text),
+            "filters": list(self._conditions(table, text)),
         }
         limit = _limit_in(text)
         if limit:
@@ -429,17 +474,30 @@ def _value_asked_for(text: str, word: str) -> bool:
 
 
 def _looks_like_a_key(name: str) -> bool:
+    """Whether a name reads as an identifier rather than something to group by."""
     lowered = fold(name)
-    return lowered == "id" or lowered.endswith(("_id", "_key", "_kodu")) or lowered == "islem_id"
+    return lowered == "id" or lowered.endswith(("_id", "_key", "_kodu"))
+
+
+#: Words that turn a number into a row count rather than part of the question.
+_SUPERLATIVE = r"(?:en (?:yuksek|dusuk|fazla|az|buyuk|kucuk)|top|ilk|highest|lowest)"
+
+#: The number has to be *next to* the superlative, give or take a qualifier —
+#: "en yuksek tutarli 5 islem", "the 5 highest transactions". Taking the first
+#: number anywhere in the sentence read "Son 7 gunde en yuksek islemleri" as a
+#: limit of 7, where the 7 is a time window and no row cap was asked for.
+_LIMIT_PATTERNS = (
+    re.compile(rf"{_SUPERLATIVE}\s+(?:\w+\s+){{0,2}}?(\d{{1,3}})\b"),
+    # Nothing between the two in this direction: "5 highest" is a row count,
+    # "7 gunde en yuksek" is a time window that happens to precede one.
+    re.compile(rf"\b(\d{{1,3}})\s+{_SUPERLATIVE}"),
+)
 
 
 def _limit_in(text: str) -> int:
-    """The N in "en yüksek 5", "top 3", "ilk 10" — and nowhere else.
-
-    A bare number is usually part of the question rather than a row count, so
-    one only counts when a superlative or an explicit "top"/"ilk" is present.
-    """
-    if not re.search(r"\b(en (yuksek|dusuk|fazla|az|buyuk|kucuk)|top|ilk|highest|lowest)\b", text):
-        return 0
-    found = re.search(r"\b(\d{1,3})\b", text)
-    return int(found.group(1)) if found else 0
+    """The N in "en yüksek 5", "top 3", "the 5 highest" — and nowhere else."""
+    for pattern in _LIMIT_PATTERNS:
+        found = pattern.search(text)
+        if found:
+            return int(found.group(1))
+    return 0

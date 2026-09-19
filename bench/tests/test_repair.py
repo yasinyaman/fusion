@@ -239,3 +239,86 @@ def test_branch_lookup_falls_back_rather_than_raising(schema):
     assert branch_for(schema, "banka.islemler")["properties"]["table"]["const"] == "banka.islemler"
     # An unknown table gets the first branch, so a caller never has to guard.
     assert branch_for(schema, "banka.yok")["properties"]["table"]["const"]
+
+
+# -- the edits really are single --------------------------------------------
+
+
+def test_a_breakdown_is_never_replaced_wholesale(schema):
+    """Two dimensions dropped and one added is not one edit.
+
+    `test_an_edit_changes_exactly_one_thing` compares top-level field keys, so
+    it passed while `dimensions=[one]` replaced a list of two — which counted
+    a two-field fix as a near miss and overstated the repair rate.
+    """
+    start = {
+        "table": "banka.islemler",
+        "metrics": [{"measure": "tutar", "aggregation": "sum"}],
+        "dimensions": [{"column": "kanal"}, {"column": "durum"}],
+        "filters": [],
+    }
+    for candidate in neighbours(start, branch_for(schema, "banka.islemler")):
+        chosen = candidate["dimensions"]
+        if chosen == start["dimensions"]:
+            continue
+        added = [d for d in chosen if d not in start["dimensions"]]
+        removed = [d for d in start["dimensions"] if d not in chosen]
+        assert len(added) + len(removed) == 1, candidate
+
+
+def test_one_dimension_may_still_be_swapped(schema):
+    """With a single breakdown, replacing it *is* one edit."""
+    start = {
+        "table": "banka.islemler",
+        "metrics": [{"measure": "tutar", "aggregation": "sum"}],
+        "dimensions": [{"column": "kanal"}],
+        "filters": [],
+    }
+    found = [
+        c["dimensions"]
+        for c in neighbours(start, branch_for(schema, "banka.islemler"))
+        if c["dimensions"] == [{"column": "durum"}]
+    ]
+    assert found, "a lone dimension should be swappable"
+
+
+def test_string_metrics_do_not_crash_the_search(schema, run):
+    """The unconstrained arm answers in DSL strings, and `to_dsl` accepts them.
+
+    Reaching for `.get` on a `str` used to raise out of the generator and past
+    `one_edit_away`'s guard, so the copilot metric was uncomputable for exactly
+    the arm whose failures are most interesting.
+    """
+    start = {
+        "table": "banka.islemler",
+        "metrics": ["tutar:sum"],
+        "dimensions": ["kanal"],
+        "filters": [],
+    }
+    found = list(neighbours(start, branch_for(schema, "banka.islemler")))
+
+    assert found, "dimension and filter edits still apply"
+    # Metric edits need the structured form, so none are offered.
+    assert all(c["metrics"] == ["tutar:sum"] for c in found)
+
+
+def test_a_missing_condition_is_offered_before_the_cap(schema):
+    """The cap used to fall entirely on filter edits.
+
+    Metric swaps were emitted first, so on a wide table the search gave up
+    before offering a single condition — the commonest real repair.
+    """
+    start = {
+        "table": "banka.islemler",
+        "metrics": [{"measure": "tutar", "aggregation": "sum"}],
+        "dimensions": [],
+        "filters": [],
+    }
+    early = []
+    for index, candidate in enumerate(neighbours(start, branch_for(schema, "banka.islemler"))):
+        if index >= 12:
+            break
+        early.append(candidate)
+
+    assert any(c["filters"] for c in early), "no condition offered in the first dozen edits"
+    assert any(c["dimensions"] for c in early), "no breakdown offered either"

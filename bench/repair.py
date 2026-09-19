@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import copy
 from collections.abc import Iterator, Mapping, Sequence
+from itertools import zip_longest
 from typing import Any
 
 #: A guard, not a tuning knob. The neighbourhood of a request is small by
@@ -57,71 +58,91 @@ def _swap(request: Mapping[str, Any], **changes: Any) -> dict[str, Any]:
     return edited
 
 
-def neighbours(request: Mapping[str, Any], branch: Mapping[str, Any]) -> Iterator[dict[str, Any]]:
-    """Every request one field away from this one, within the schema.
+def _metric_edits(
+    request: Mapping[str, Any],
+    metrics: Sequence[Any],
+    options: Sequence[Mapping[str, Any]],
+    dimensions: Sequence[Mapping[str, Any]],
+) -> Iterator[dict[str, Any]]:
+    """A different measure, aggregation or transform on the first metric.
 
-    Reads the alternatives off the same schema branch the arm decoded against,
-    so an edit can never produce something the layer would refuse.
+    Skipped entirely when the metrics are plain DSL strings rather than the
+    structured form: the unconstrained arm answers that way, `to_dsl` accepts
+    it, and reaching for `.get` on a `str` used to raise out of the generator
+    and past the caller's guard. The other edit kinds still apply, so a
+    string-shaped request is measurable rather than a crash.
     """
-    metrics = list(request.get("metrics") or [])
-    dimensions = list(request.get("dimensions") or [])
-    filters = list(request.get("filters") or [])
-    properties = branch.get("properties", {})
-    metric_options = properties.get("metrics", {}).get("items", {}).get("oneOf", [])
-    dimension_options = properties.get("dimensions", {}).get("items", {}).get("oneOf", [])
-    filter_options = properties.get("filters", {}).get("items", {}).get("oneOf", [])
-
-    # -- the metric: a different measure, aggregation or transform
-    if metrics:
-        first, rest = metrics[0], metrics[1:]
-        transforms = [""]
-        for option in metric_options:
-            transforms = option["properties"].get("transform", {}).get("enum", [""])
-            break
-        for option in metric_options:
-            measure = option["properties"]["measure"]["const"]
-            for agg in option["properties"]["aggregation"]["enum"]:
-                if (measure, agg) == (first.get("measure"), first.get("aggregation")):
-                    continue
-                edited = dict(first, measure=measure, aggregation=agg)
-                yield _swap(request, metrics=[edited, *rest])
-        calendar = _calendar_transforms()
-        for transform in transforms:
-            if transform in calendar and not _has_a_grain(dimensions):
+    if not metrics or not isinstance(metrics[0], Mapping):
+        return
+    first, rest = metrics[0], list(metrics[1:])
+    transforms: Sequence[str] = [""]
+    for option in options:
+        transforms = option["properties"].get("transform", {}).get("enum", [""])
+        break
+    for option in options:
+        measure = option["properties"]["measure"]["const"]
+        for agg in option["properties"]["aggregation"]["enum"]:
+            if (measure, agg) == (first.get("measure"), first.get("aggregation")):
                 continue
-            if transform != (first.get("transform") or ""):
-                edited = dict(first)
-                if transform:
-                    edited["transform"] = transform
-                else:
-                    edited.pop("transform", None)
-                yield _swap(request, metrics=[edited, *rest])
-        if rest:
-            yield _swap(request, metrics=[first])
+            yield _swap(request, metrics=[dict(first, measure=measure, aggregation=agg), *rest])
+    calendar = _calendar_transforms()
+    for transform in transforms:
+        if transform in calendar and not _has_a_grain(dimensions):
+            continue
+        if transform != (first.get("transform") or ""):
+            edited = dict(first)
+            if transform:
+                edited["transform"] = transform
+            else:
+                edited.pop("transform", None)
+            yield _swap(request, metrics=[edited, *rest])
+    if rest:
+        yield _swap(request, metrics=[first])
 
-    # -- the breakdown: one added, one removed, one regrained
-    for option in dimension_options:
+
+def _dimension_edits(
+    request: Mapping[str, Any],
+    metrics: Sequence[Any],
+    dimensions: Sequence[Mapping[str, Any]],
+    options: Sequence[Mapping[str, Any]],
+) -> Iterator[dict[str, Any]]:
+    """One breakdown added, removed or regrained — and only one.
+
+    Replacing the whole list with a single candidate is only one edit when
+    there was at most one to begin with. Offering it for a two-dimension
+    request counted "drop both, add one" as a single-field fix, which
+    overstated how near a wrong answer was to a right one.
+    """
+    for option in options:
         column = option["properties"]["column"]["const"]
         grains = option["properties"].get("grain", {}).get("enum", [""])
         for grain in grains:
             candidate = {"column": column} if not grain else {"column": column, "grain": grain}
             if candidate in dimensions:
                 continue
-            yield _swap(request, dimensions=[candidate])
+            if len(dimensions) <= 1:
+                yield _swap(request, dimensions=[candidate])
             if dimensions:
                 yield _swap(request, dimensions=[*dimensions, candidate])
-    strands_a_transform = metrics and metrics[0].get("transform") in _calendar_transforms()
-    if dimensions and not strands_a_transform:
-        yield _swap(request, dimensions=[])
+    first = metrics[0] if metrics and isinstance(metrics[0], Mapping) else {}
+    if dimensions and first.get("transform") not in _calendar_transforms():
+        # One at a time. Clearing the list outright is the same as this when
+        # there is a single breakdown, and more than one edit when there are
+        # two — which is the whole point of the loop.
         for index in range(len(dimensions)):
-            remaining = dimensions[:index] + dimensions[index + 1 :]
-            yield _swap(request, dimensions=remaining)
+            yield _swap(request, dimensions=dimensions[:index] + list(dimensions[index + 1 :]))
 
-    # -- the condition: one added, one removed
-    for option in filter_options:
-        properties_of = option["properties"]
-        column = properties_of["column"]["const"]
-        values = properties_of["value"].get("enum")
+
+def _filter_edits(
+    request: Mapping[str, Any],
+    filters: Sequence[Mapping[str, Any]],
+    options: Sequence[Mapping[str, Any]],
+) -> Iterator[dict[str, Any]]:
+    """One condition added or removed."""
+    for option in options:
+        properties = option["properties"]
+        column = properties["column"]["const"]
+        values = properties["value"].get("enum")
         if not values:
             continue
         for value in values:
@@ -130,10 +151,39 @@ def neighbours(request: Mapping[str, Any], branch: Mapping[str, Any]) -> Iterato
                 yield _swap(request, filters=[*filters, candidate])
     if filters:
         yield _swap(request, filters=[])
-
-    # -- the ordering
     if request.get("order_by"):
         yield _swap(request, descending=not request.get("descending"))
+
+
+def neighbours(request: Mapping[str, Any], branch: Mapping[str, Any]) -> Iterator[dict[str, Any]]:
+    """Every request one field away from this one, within the schema.
+
+    Reads the alternatives off the same schema branch the arm decoded against,
+    so an edit can never produce something the layer would refuse.
+
+    The three kinds are interleaved rather than concatenated, because the
+    search that consumes this stops at a cap. Emitting every measure and
+    aggregation swap first meant that on a wide table the cap was reached
+    before a single filter edit was offered — and a missing condition is the
+    commonest repair there is.
+    """
+    metrics = list(request.get("metrics") or [])
+    dimensions = [d for d in (request.get("dimensions") or []) if isinstance(d, Mapping)]
+    filters = list(request.get("filters") or [])
+    properties = branch.get("properties", {})
+
+    def options(field: str) -> Sequence[Mapping[str, Any]]:
+        return properties.get(field, {}).get("items", {}).get("oneOf", [])
+
+    streams = (
+        _metric_edits(request, metrics, options("metrics"), dimensions),
+        _dimension_edits(request, metrics, dimensions, options("dimensions")),
+        _filter_edits(request, filters, options("filters")),
+    )
+    for group in zip_longest(*streams):
+        for candidate in group:
+            if candidate is not None:
+                yield candidate
 
 
 def branch_for(schema: Mapping[str, Any], table: str) -> dict[str, Any]:

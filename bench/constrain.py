@@ -47,6 +47,10 @@ FILTER_OPS = ("eq", "ne", "gt", "gte", "lt", "lte", "like")
 #: per measure by the domain, not here.
 CANDIDATE_AGGS = ("sum", "avg", "min", "max", "count", "count_distinct", "median")
 
+#: The largest row cap a constrained request may ask for. Not a policy — the
+#: DSL clamps to its own maximum anyway — just a bound the grammar can state.
+MAX_LIMIT = 1000
+
 #: A dimension with at most this many distinct values has its values offered as
 #: an enum, so a filter cannot compare against one that was never stored.
 #:
@@ -76,7 +80,9 @@ def legal_aggregations(measure: Any) -> list[str]:
     return allowed
 
 
-def _metric_branch(measure: Any, transforms: Sequence[str]) -> dict[str, Any]:
+def _metric_branch(
+    measure: Any, transforms: Sequence[str], aggregations: Sequence[str] | None = None
+) -> dict[str, Any]:
     """One ``oneOf`` branch: this measure, with only the aggregations it takes.
 
     Splitting per measure is what makes the constraint exact. A single
@@ -85,7 +91,9 @@ def _metric_branch(measure: Any, transforms: Sequence[str]) -> dict[str, Any]:
     """
     properties: dict[str, Any] = {
         "measure": {"const": measure.name},
-        "aggregation": {"enum": legal_aggregations(measure)},
+        "aggregation": {
+            "enum": list(aggregations) if aggregations is not None else legal_aggregations(measure)
+        },
     }
     if transforms:
         properties["transform"] = {"enum": ["", *transforms]}
@@ -240,7 +248,11 @@ def table_branch(
 ) -> dict[str, Any]:
     """The request schema for one table."""
     values = values or {}
-    pairs = [(m.name, agg) for m in model.measures for agg in legal_aggregations(m)]
+    # Computed once and handed to the branches, rather than recomputed inside
+    # each of them: every call attempts seven aggregations and catches the
+    # refusals as exceptions.
+    by_measure = {m.name: legal_aggregations(m) for m in model.measures}
+    pairs = [(name, agg) for name, aggs in by_measure.items() for agg in aggs]
     return {
         "type": "object",
         "properties": {
@@ -249,7 +261,11 @@ def table_branch(
                 "type": "array",
                 "minItems": 1,
                 "maxItems": 3,
-                "items": {"oneOf": [_metric_branch(m, transforms) for m in model.measures]},
+                "items": {
+                    "oneOf": [
+                        _metric_branch(m, transforms, by_measure[m.name]) for m in model.measures
+                    ]
+                },
             },
             "dimensions": {
                 "type": "array",
@@ -268,6 +284,10 @@ def table_branch(
             # select is still expressible, and is a real mistake worth seeing.
             "order_by": {"enum": orderable_columns(model, pairs)},
             "descending": {"type": "boolean"},
+            # Without this a constrained reply could not carry a row cap at
+            # all: `additionalProperties` is closed, so a seeded `limit` was
+            # dropped on every "top N" question and silently became 100.
+            "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIMIT},
         },
         "required": ["table", "metrics"],
         "additionalProperties": False,
@@ -281,11 +301,13 @@ def request_schema(semantic: Any, tables: Sequence[str]) -> dict[str, Any]:
     between them and a union would let a model ask for one table's column on
     another's.
     """
-    transforms = [
-        spec["name"]
-        for spec in semantic.describe(tables[0])["transforms"]
-        if spec["name"] not in EXCLUDED_TRANSFORMS
-    ]
+    if not tables:
+        raise ValueError("request_schema needs at least one table to describe.")
+    # Straight from the registry: transforms are global, and `describe` would
+    # build a model and a set of examples only to have them thrown away.
+    from fusion.domain.transforms import TRANSFORMS
+
+    transforms = [name for name in TRANSFORMS if name not in EXCLUDED_TRANSFORMS]
     branches = []
     for table in tables:
         model = semantic.model_for(table)
@@ -298,6 +320,30 @@ def request_schema(semantic: Any, tables: Sequence[str]) -> dict[str, Any]:
     if len(branches) == 1:
         return branches[0]
     return {"oneOf": branches}
+
+
+def values_by_table(schema: Mapping[str, Any]) -> dict[str, dict[str, list[Any]]]:
+    """The value enums a request schema carries, per table.
+
+    Lets everything downstream read the vocabulary off the schema that was
+    just built instead of rediscovering it — each discovery is a full DSL
+    round trip, and there is nothing new to learn the second time.
+    """
+    branches = schema.get("oneOf") or [schema]
+    found: dict[str, dict[str, list[Any]]] = {}
+    for branch in branches:
+        properties = branch.get("properties", {})
+        table = properties.get("table", {}).get("const")
+        if not table:
+            continue
+        per_column: dict[str, list[Any]] = {}
+        for option in properties.get("filters", {}).get("items", {}).get("oneOf", []):
+            option_properties = option.get("properties", {})
+            values = option_properties.get("value", {}).get("enum")
+            if values:
+                per_column[option_properties["column"]["const"]] = list(values)
+        found[table] = per_column
+    return found
 
 
 def _metric_to_dsl(metric: Any) -> str:

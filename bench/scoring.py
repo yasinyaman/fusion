@@ -208,6 +208,11 @@ class Answer:
     error: str = ""
     latency_ms: float = 0.0
     named: tuple[str, ...] | None = None
+    #: Set when an arm answered with something other than what it was asked
+    #: for — a seeded arm keeping its proposal after the model failed. Kept
+    #: apart from `error` because the answer did run and may well be right;
+    #: what it must not do is pass as the model's own work.
+    fell_back: bool = False
 
 
 def grade(

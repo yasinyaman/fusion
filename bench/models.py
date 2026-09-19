@@ -15,6 +15,42 @@ from collections.abc import Mapping
 from typing import Any
 
 
+def extract_json(text: str) -> str:
+    """Pull the JSON object out of a model reply.
+
+    Models wrap the answer in prose and fences as often as not, and refusing
+    those replies would measure formatting compliance rather than whether the
+    arm chose the right metrics. The first balanced ``{...}`` is taken, so a
+    fenced block or an inline object both work.
+    """
+    stripped = text.strip()
+    start = stripped.find("{")
+    if start == -1:
+        return stripped
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(start, len(stripped)):
+        char = stripped[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return stripped[start : index + 1]
+    return stripped[start:]
+
+
 class OllamaModel:
     """A model served by a local ollama.
 
