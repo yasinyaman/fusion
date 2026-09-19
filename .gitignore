@@ -48,3 +48,7 @@ backups/
 # Tool history / scratch
 .quackstack_history.json
 
+
+# Ad-hoc benchmark runs. The two reference runs live in bench/results-1.5b and
+# bench/results-7b, named for the model that produced them.
+/bench/results/

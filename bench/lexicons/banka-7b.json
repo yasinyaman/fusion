@@ -1,0 +1,141 @@
+{
+  "columns": {
+    "acilis_tarihi": [
+      "opening_date",
+      "start_date"
+    ],
+    "ad_soyad": [
+      "name_surname",
+      "full_name"
+    ],
+    "durum": [
+      "status",
+      "state"
+    ],
+    "eposta": [
+      "email",
+      "mail"
+    ],
+    "islem_id": [
+      "transaction_id",
+      "id"
+    ],
+    "islem_tarihi": [
+      "date",
+      "time"
+    ],
+    "islem_turu": [
+      "type",
+      "operation_type"
+    ],
+    "islemler": [
+      "operations",
+      "transactions"
+    ],
+    "kanal": [
+      "channel",
+      "method"
+    ],
+    "musteri_id": [
+      "customer_id",
+      "cust_id"
+    ],
+    "musteriler": [
+      "customers",
+      "clients"
+    ],
+    "para_birimi": [
+      "currency",
+      "money_type"
+    ],
+    "segment": [
+      "segmentation",
+      "category"
+    ],
+    "sube_kodu": [
+      "branch_code",
+      "code"
+    ],
+    "tutar": [
+      "amount",
+      "value",
+      "revenue"
+    ]
+  },
+  "values": {
+    "1": [
+      "one"
+    ],
+    "2": [
+      "two"
+    ],
+    "3": [
+      "three"
+    ],
+    "4": [
+      "four"
+    ],
+    "5": [
+      "five"
+    ],
+    "ank02": [
+      "ank02"
+    ],
+    "basarili": [
+      "successful",
+      "success"
+    ],
+    "eur": [
+      "euro",
+      "€"
+    ],
+    "havale": [
+      "transfer",
+      "wire_transfer"
+    ],
+    "iptal": [
+      "cancelled",
+      "canceled"
+    ],
+    "ist01": [
+      "ist01"
+    ],
+    "izm03": [
+      "izm03"
+    ],
+    "mobil": [
+      "mobile"
+    ],
+    "odeme": [
+      "payment",
+      "charge"
+    ],
+    "premium": [
+      "premium"
+    ],
+    "standart": [
+      "standard"
+    ],
+    "sube": [
+      "branch"
+    ],
+    "temel": [
+      "basic"
+    ],
+    "transfer": [
+      "transfer",
+      "wire_transfer"
+    ],
+    "try": [
+      "turkish_lira",
+      "tl"
+    ],
+    "usd": [
+      "dollar",
+      "$"
+    ],
+    "web": [
+      "website"
+    ]
+  }
+}
