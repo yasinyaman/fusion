@@ -36,6 +36,14 @@ Execution accuracy, 40 questions / the 34 that need no join. Six of the
 questions require a join, which the DSL refuses by design in v1, so both
 numbers are reported rather than averaged.
 
+> **Provenance.** Every number below was produced at commit `ddc1d3a`. The
+> commit after it, `28f2574`, changed `repair.py`, `arms.py`, `lexicon.py`,
+> `runner.py` and `scoring.py` in response to a review, and the run was **not**
+> repeated — so the `lexicon+repair` row in particular has not been re-measured
+> against the code now in the tree. Reproduce with
+> `python -m bench.run_duckdb qwen2.5-coder:7b bench/results-7b` (~30 min,
+> needs a local ollama) before quoting these anywhere that matters.
+
 **qwen2.5-coder:1.5b**
 
 | Arm | 40q | single-table | Hallucinated | Median latency |
