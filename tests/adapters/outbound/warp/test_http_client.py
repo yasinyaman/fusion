@@ -143,7 +143,8 @@ class TestPooledHttpTransport:
             transport.close()
 
     def test_is_transport_failure_predicate(self):
-        assert is_transport_failure(HttpTransportError("x", status=500))
+        assert not is_transport_failure(HttpTransportError("x", status=500))  # the database's
+        assert is_transport_failure(HttpTransportError("x", status=503))
         assert is_transport_failure(HttpTransportError("x", status=408))
         assert is_transport_failure(HttpTransportError("x", status=429))
         assert is_transport_failure(HttpTransportError("network"))  # no status
@@ -313,3 +314,12 @@ class TestSchemaEndpoints:
             "sort": "id:asc",
             "filter[s][eq]": "new",
         }
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://[fd00:ec2::254]/", "http://100.100.100.200", "http://[::ffff:169.254.169.254]"],
+)
+def test_metadata_addresses_outside_link_local_are_blocked(url):
+    with pytest.raises(ConnectionError):
+        validate_base_url(url)

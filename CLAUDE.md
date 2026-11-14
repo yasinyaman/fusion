@@ -42,7 +42,7 @@ Dependency rule (enforced by `tests/architecture/test_dependency_rules.py`, whic
 | `fusion.ports` | domain, ports | no |
 | `fusion.application` | domain, ports, application | no |
 | `fusion.observability` | domain, application, observability | no |
-| `fusion.adapters.outbound.*` | domain, ports, outbound | duckdb, pyarrow, sqlglot, requests |
+| `fusion.adapters.outbound.*` | domain, ports, outbound | duckdb, pyarrow, sqlglot, requests (and its urllib3) |
 | `fusion.adapters.inbound.*` | domain, ports, application, observability, inbound, `fusion.bootstrap`, `fusion` | fastapi, starlette, slowapi (and its `limits`), pydantic, uvicorn, mcp, pandas |
 | `fusion.bootstrap`, `fusion.__init__` | anything | yes |
 
@@ -118,7 +118,7 @@ tests/
 - **Dependency rule first.** Domain/ports/application never import third-party code; adapters implement ports; only `bootstrap` composes them. Run `uv run pytest tests/architecture` after moving code.
 - **All DuckDB access goes through `AnalyticsStore`.** The adapter holds the lock; services never see a connection.
 - **`create_table_as` is the only non-SELECT path** and is reachable only from `MaterializedViewService` for `mv_*` tables.
-- **Guardrails are mandatory for user SQL:** `SqlValidator.validate()` runs before any query; only `exp.Query` statements pass, forbidden file/network functions are denied, and the store latch is the backstop.
+- **Guardrails are mandatory for user SQL:** `SqlValidator.validate()` runs before any query; SQL is parsed strictly in the DuckDB dialect (the one it runs in); only one `exp.Query` statement passes, forbidden file/network functions are denied, and the store latch is the backstop.
 - **Rows travel as `RowSet`** (columns + tuples). pandas/Arrow only inside adapters and `sdk/formats.py`.
 - **The semantic layer plans from the metric expression, not from SQL.** Every
   transform compiles to a window, which makes `SqlglotAnalyzer.analyze` give up
@@ -129,7 +129,7 @@ tests/
 - **Tool results are capped at 100 rows**; result dict keys are `columns, rows, row_count, truncated, execution_time_ms, from_cache`. `query_data` reads only 101 rows, so `row_count` is the number returned, not the query's total; repeated column names come back as `id`, `id_2`.
 - **Identifiers from LLMs are regex-validated** and columns are checked against the catalog; `search_data` binds its value as a `?` parameter.
 - **Pushdown** happens only for single-source queries whose tables are all unloaded and reference no `mv_*` table; a failed pushdown falls back to local execution, and a Warp that refuses raw SQL (403) turns it off for that source.
-- **Slices never change a result.** Only table names are rewritten; the original WHERE and ON clauses stay, predicates are pushed only when they are an AND of literal comparisons on one table (never OR/NOT/functions/parameters, never the null side of an outer join) and the literal is of the column's own kind (`predicate_is_pushable`); a LIMIT is pushed only when every WHERE condition was and there is no OFFSET; ANTI/SEMI/ASOF/USING/NATURAL joins are not sliced at all; and `SliceSpec.subsumes` is conservative — an unprovable match refetches. `tests/e2e/test_result_correctness.py` holds the cases that once got this wrong.
+- **Slices never change a result.** Only table names are rewritten; the original WHERE and ON clauses stay, predicates are pushed only when they are an AND of literal comparisons on one table (never OR/NOT/functions/parameters, never the null side of an outer join) and the literal can be read in the column's own kind (`pushable_form` recasts `id = '42'` to `42`, as DuckDB does, and refuses what the source would compare differently: a quoted decimal on DECIMAL, any literal on a single-precision float, text on a zoned timestamp without an offset, arrays, LIKE on uuid); on text only `=`, `IN` and `LIKE` are pushed, since the source's collation decides `!=` and ranges; two conditions on one column and operator are merged where that is exact (`merge_same_key`); a LIMIT is pushed only when every WHERE condition was, none is on text, and there is no OFFSET, PERCENT or WITH TIES; ANTI/SEMI/ASOF/USING/NATURAL joins are not sliced at all; and `SliceSpec.subsumes` is conservative — an unprovable match refetches. `tests/e2e/test_result_correctness.py` holds the cases that once got this wrong.
 - **A table is "loaded" only when all of it is in the store.** Partial slices live beside it in the registry; a slice cut short by the source is `complete=False` and never answers a narrower query.
 - **Refusals are actionable.** When a table is too big to load and the query gives nothing to narrow it by, `QueryError` names the table, its estimated size, the limit and the four ways forward.
 - **Materialized views are `mv_{name}` tables**; cross-source federation prefixes tables with the source name (`mydb.orders`).

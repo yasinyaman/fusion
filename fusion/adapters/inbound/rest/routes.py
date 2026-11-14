@@ -69,18 +69,18 @@ def register_routes(app: FastAPI, limiter: Limiter) -> None:
 
     @app.get("/readiness")
     def readiness(request: Request) -> Any:
-        """Readiness: at least one data source must be connected."""
-        try:
-            sources = fusion_of(request).tools.list_sources()
-        except Exception as e:  # pragma: no cover - defensive
-            logger.error("Readiness check failed: %s", e)
-            return JSONResponse(status_code=503, content={"status": "not_ready", "reason": str(e)})
-        if not sources.get("sources"):
+        """Readiness: at least one data source must be connected.
+
+        Reads only the list of connected sources, never the store: a probe
+        that waited behind a long query would mark a busy instance dead.
+        """
+        names = fusion_of(request).sources.source_names()
+        if not names:
             return JSONResponse(
                 status_code=503,
                 content={"status": "not_ready", "reason": "No data sources connected"},
             )
-        return {"status": "ready", "version": __version__, "sources": len(sources["sources"])}
+        return {"status": "ready", "version": __version__, "sources": len(names)}
 
     # -- tools --------------------------------------------------------------
 
@@ -134,6 +134,15 @@ def register_routes(app: FastAPI, limiter: Limiter) -> None:
     @app.post("/views/{name}/refresh")
     def refresh_view(request: Request, name: str) -> dict[str, Any]:
         return handle_result(fusion_of(request).tools.refresh_view(name))
+
+    @app.delete("/views/{name}")
+    def drop_view(request: Request, name: str) -> dict[str, Any]:
+        """Drop a materialized view: its table, its refresh timer and its definition."""
+        views = fusion_of(request).views
+        if not views.has(name):
+            raise HTTPException(status_code=404, detail=f"Materialized view '{name}' not found")
+        views.drop(name)
+        return {"status": "dropped", "name": name}
 
     @app.post("/tables/{table:path}/load")
     def load_table(

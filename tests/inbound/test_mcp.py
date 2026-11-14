@@ -70,3 +70,10 @@ def test_load_table_accepts_a_slice(server):
     assert payload["status"] == "loaded"
     assert payload["slice"] == "columns=id,product where product = 'A'"
     assert payload["row_count"] == 3
+
+
+def test_tool_descriptions_are_the_shared_ones(server):
+    from fusion.application.tool_schemas import TOOL_DEFINITIONS
+
+    expected = {d["name"]: d["description"] for d in TOOL_DEFINITIONS}
+    assert {t.name: t.description for t in _await(server.list_tools())} == expected

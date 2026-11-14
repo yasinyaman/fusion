@@ -273,13 +273,21 @@ def run_demo(scale: float = 1.0, quiet: bool = False) -> dict[str, Any]:
 
         say("\n[6/9] Cross-source federation — JOIN across three 'databases'...")
         t0 = time.perf_counter()
+        # Payments and volume are counted before sessions are joined in: a
+        # user has many sessions, and joining them first would count each
+        # payment once per session.
         result = app.query.sql(
-            "SELECT t.method, COUNT(*) AS payments, ROUND(SUM(o.amount), 2) AS volume, "
-            "COUNT(DISTINCT s.device) AS devices "
-            "FROM warp_finance.transactions t "
-            "JOIN warp_ecommerce.orders o ON t.order_id = o.id "
-            "JOIN warp_analytics.sessions s ON s.user_id = o.user_id "
-            "GROUP BY t.method ORDER BY volume DESC"
+            "WITH pay AS ("
+            "  SELECT t.method, COUNT(*) AS payments, ROUND(SUM(o.amount), 2) AS volume"
+            "  FROM warp_finance.transactions t"
+            "  JOIN warp_ecommerce.orders o ON t.order_id = o.id GROUP BY t.method"
+            "), dev AS ("
+            "  SELECT t.method, COUNT(DISTINCT s.device) AS devices"
+            "  FROM warp_finance.transactions t"
+            "  JOIN warp_ecommerce.orders o ON t.order_id = o.id"
+            "  JOIN warp_analytics.sessions s ON s.user_id = o.user_id GROUP BY t.method"
+            ") SELECT pay.method, payments, volume, devices FROM pay JOIN dev USING (method) "
+            "ORDER BY volume DESC"
         )
         say(f"  {result.row_count} rows in {_ms(t0)}")
         say(result.to_markdown())

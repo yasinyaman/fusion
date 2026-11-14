@@ -237,10 +237,14 @@ class SqlglotSemanticCompiler:
             )
             # LAST_VALUE over a one-period-wide frame: the value of *that*
             # calendar period, and NULL when the period has no row. LAG would
-            # answer with whatever the previous row happens to be.
+            # answer with whatever the previous row happens to be. A row with
+            # no period has no earlier one: in a RANGE frame NULLs are each
+            # other's peers, so without the CASE it would answer itself.
+            bucket = _quote(time_dimension.output_name())
             return (
+                f"CASE WHEN {bucket} IS NULL THEN NULL ELSE "
                 f"LAST_VALUE({value}) OVER ({self._partition(query)}"
-                f"ORDER BY {_quote(time_dimension.output_name())} {frame})"
+                f"ORDER BY {bucket} {frame}) END"
             )
         if call.name in ("rank", "dense_rank", "percent_rank"):
             return f"{call.name.upper()}() OVER (ORDER BY {value} DESC)"

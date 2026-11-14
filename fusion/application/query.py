@@ -40,6 +40,9 @@ class QueryService:
         self._cache = cache
         self._store = store
         self._sources = sources
+        #: Sources whose SQL has no LIMIT (SQL Server, Oracle): a capped query
+        #: failed there and the uncapped one ran, so the cap is not sent again.
+        self._no_row_cap: set[str] = set()
 
     @property
     def planner(self) -> FetchPlanner:
@@ -97,7 +100,7 @@ class QueryService:
                 source = self._sources.pushdown_source(plan.fetch.source_name)
                 if source is not None:
                     try:
-                        result = self._execute_pushdown(query, plan.fetch, source)
+                        result = self._execute_pushdown(query, plan.fetch, source, max_rows)
                     except Exception as e:
                         logger.info("Pushdown failed, falling back to local execution: %s", e)
                     else:
@@ -113,6 +116,12 @@ class QueryService:
                 self._sources.evict_slice(table_name)
             loaded = self._sources.ensure_slices(plan.targets)
             mapping = {ref: name for ref, name in loaded.items() if name != ref.full_name}
+            # ``FROM users`` resolved to ``db.users``, which is the name the
+            # store has: point the bare name at it too.
+            bare = {r.table for r in self._analyzer.table_references(query) if not r.source}
+            for ref, name in loaded.items():
+                if ref.table in bare:
+                    mapping[TableRef("", ref.table)] = name
             if mapping:
                 # Only the table names change; the original WHERE and ON
                 # clauses stay, so a slice can only narrow what is scanned.
@@ -191,12 +200,31 @@ class QueryService:
         return result
 
     def _execute_pushdown(
-        self, query: str, plan: FetchPlan, source: PushdownCapable
+        self, query: str, plan: FetchPlan, source: PushdownCapable, max_rows: int | None = None
     ) -> QueryResult:
         assert plan.source_name is not None
-        rewritten = self._analyzer.strip_source_prefix(query, plan.source_name)
-        logger.info("Pushdown query to %s: %s", plan.source_name, rewritten[:120])
+        name = plan.source_name
+        rewritten = self._analyzer.strip_source_prefix(query, name)
         started = time.perf_counter()
-        rows = source.execute_query(rewritten)
+        capped = (
+            self._analyzer.with_row_cap(rewritten, max_rows)
+            if max_rows is not None and name not in self._no_row_cap
+            else rewritten
+        )
+        if capped != rewritten:
+            # Read no more than the caller will keep. The source's dialect is
+            # not known, and LIMIT is not SQL Server's or Oracle's: if the
+            # capped query fails, the plain one decides who was at fault.
+            logger.info("Pushdown query to %s: %s", name, capped[:120])
+            try:
+                rows = source.execute_query(capped)
+            except QueryError:
+                # The source answered and refused; an outage is not retried.
+                rows = source.execute_query(rewritten)
+                logger.info("Source %s refused LIMIT; pushing queries uncapped", name)
+                self._no_row_cap.add(name)
+        else:
+            logger.info("Pushdown query to %s: %s", name, rewritten[:120])
+            rows = source.execute_query(rewritten)
         elapsed_ms = (time.perf_counter() - started) * 1000
         return QueryResult.from_rowset(rows, sql=query, execution_time_ms=elapsed_ms)

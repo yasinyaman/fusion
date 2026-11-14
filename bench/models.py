@@ -129,7 +129,15 @@ class DuckDBExecutor:
         self._connection = connection
 
     def run(self, sql: str) -> list[tuple]:
-        """Execute and return rows."""
+        """Execute and return rows.
+
+        The SQL is a model's, and every arm shares this connection, so it goes
+        through Fusion's read-only guardrail first: one ``DELETE`` would
+        otherwise change the data every later answer is graded against.
+        """
+        from fusion.adapters.outbound.sqlglot_policy import SqlglotValidator
+
+        SqlglotValidator().validate(sql)
         return [tuple(row) for row in self._connection.execute(sql).fetchall()]
 
 
@@ -154,7 +162,16 @@ def ollama_remote() -> OllamaModel:
 
 
 def oracle_executor() -> OdbcExecutor:
-    """The benchmark's Oracle, reachable inside the driver image."""
-    return OdbcExecutor(
-        "DRIVER={Oracle 23 ODBC driver};DBQ=127.0.0.1:1521/FREEPDB1;UID=warp;PWD=Warp_Integr4tion1;"
-    )
+    """The benchmark's Oracle, reachable inside the driver image.
+
+    The password comes from ``BENCH_ORACLE_PASSWORD``, not the source: a
+    credential in the repository is a credential for everyone who clones it.
+    """
+    import os
+
+    password = os.environ.get("BENCH_ORACLE_PASSWORD")
+    if not password:
+        raise RuntimeError("Set BENCH_ORACLE_PASSWORD to run the Oracle arms.")
+    dsn = os.environ.get("BENCH_ORACLE_DSN", "127.0.0.1:1521/FREEPDB1")
+    user = os.environ.get("BENCH_ORACLE_USER", "warp")
+    return OdbcExecutor(f"DRIVER={{Oracle 23 ODBC driver}};DBQ={dsn};UID={user};PWD={password};")

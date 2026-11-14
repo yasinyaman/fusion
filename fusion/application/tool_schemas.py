@@ -213,7 +213,10 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
             "'price:weighted_avg(weight=quantity)') and can be wrapped in transforms "
             "that nest, e.g. 'change_pct(cumsum(revenue:sum))'. Transforms: cumsum, "
             "change, change_pct, time_shift, lag, lead, rank, percent_rank, dense_rank, "
-            "ntile. Unlike query_data this works on tables far too large to load, "
+            "ntile. Filters apply before transforms: with a date filter, the first "
+            "period kept has no previous one, so its change and time_shift are null "
+            "even if earlier data exists. Unlike query_data this works on tables far "
+            "too large to load, "
             "because only the columns and rows the metrics need are fetched. Call "
             "list_metrics first to see what a table offers."
         ),

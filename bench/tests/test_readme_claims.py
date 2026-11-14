@@ -47,6 +47,8 @@ def _by_question(model: str, first: str, second: str, single_table: bool = False
         ("7b", "semantic", False, 8, 0, 0.0078),
         ("7b", "semantic-schema", False, 8, 0, 0.0078),
         ("7b", "catalog", True, 3, 1, 0.625),
+        ("7b", "raw", True, 9, 1, 0.0215),
+        ("7b", "raw", False, 9, 3, 0.146),
         ("1.5b", "lexicon", False, 1, 7, 0.0703),
     ],
 )

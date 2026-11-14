@@ -276,6 +276,18 @@ class TestNumbers:
             None,
         ]
 
+    def test_time_shift_of_a_row_with_no_period_is_null(self, store, compiler, model):
+        # NULL months are each other's peers in a RANGE frame, so without a
+        # guard the NULL bucket's "previous month" was its own 7.0.
+        store.execute("INSERT INTO shop.orders VALUES (NULL, 7.0, 1, 'paid')")
+        paid = {"filters": [Predicate(column="status", op="eq", value="paid")]}
+        assert self.values(store, compiler, model, "time_shift(amount:sum)", **paid) == [
+            None,
+            15.0,
+            None,
+            None,
+        ]
+
     def test_ranking_transforms(self, store, compiler, model):
         paid = {"filters": [Predicate(column="status", op="eq", value="paid")]}
         assert self.values(store, compiler, model, "rank(amount:sum)", **paid) == [3, 2, 1]

@@ -14,7 +14,11 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
 from fusion import __version__
-from fusion.adapters.inbound.rest.middleware import AuthMiddleware, StructuredLoggingMiddleware
+from fusion.adapters.inbound.rest.middleware import (
+    AuthMiddleware,
+    BodyLimitMiddleware,
+    StructuredLoggingMiddleware,
+)
 from fusion.adapters.inbound.rest.rate_limit import failed_key_counter, make_limiter
 from fusion.adapters.inbound.rest.routes import register_routes
 from fusion.application.app import FusionApp
@@ -48,6 +52,9 @@ def create_app(fusion: FusionApp, settings: Settings | None = None) -> FastAPI:
         fusion.backup.stop()
         logger.info("Fusion REST API shutting down")
 
+    # The docs are served without a key (auth skips them), so in production
+    # they follow the debug endpoints: off unless switched on.
+    docs = settings.debug_endpoints_enabled()
     app = FastAPI(
         title="Fusion OLAP API",
         description=(
@@ -56,6 +63,9 @@ def create_app(fusion: FusionApp, settings: Settings | None = None) -> FastAPI:
         ),
         version=__version__,
         lifespan=lifespan,
+        docs_url="/docs" if docs else None,
+        redoc_url="/redoc" if docs else None,
+        openapi_url="/openapi.json" if docs else None,
     )
     app.state.fusion = fusion
     app.state.settings = settings
@@ -71,6 +81,8 @@ def create_app(fusion: FusionApp, settings: Settings | None = None) -> FastAPI:
         on_failure=failed_key_counter(limiter, settings),
     )
     app.add_middleware(SlowAPIMiddleware)
+    # Inside logging, so a refused upload still gets its access line.
+    app.add_middleware(BodyLimitMiddleware, max_bytes=settings.max_request_bytes)
     app.add_middleware(StructuredLoggingMiddleware)
     app.add_middleware(
         CORSMiddleware,

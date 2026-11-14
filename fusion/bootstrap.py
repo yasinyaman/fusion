@@ -53,6 +53,7 @@ def build_app(
             external_access=settings.external_access,
             max_temp_directory_size=settings.max_temp_directory_size or None,
             query_timeout=settings.query_timeout,
+            timezone=settings.timezone,
         )
     if cache is None:
         from fusion.adapters.outbound.memory_cache import MemoryQueryCache

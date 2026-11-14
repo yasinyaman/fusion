@@ -47,8 +47,14 @@ class TestLimitIsNotReadAtTheSourceUnlessEverythingElseIs:
         assert _rows(big, sql) == [(2009,), (2023,), (2037,), (2051,), (2065,)]
 
     def test_a_plain_limit_still_is(self, big, factory):
-        _rows(big, "SELECT status FROM db.big WHERE status = 'paid' LIMIT 3")
+        _rows(big, "SELECT id FROM db.big WHERE x = 1 LIMIT 3")
         assert factory.sources["db"].calls_named("fetch_slice")[-1][2].limit == 3
+
+    def test_not_beside_a_condition_on_text(self, big, factory):
+        # A case-insensitive source answers status = 'paid' with 'PAID' too;
+        # three such rows, dropped here, would leave fewer than three.
+        _rows(big, "SELECT id FROM db.big WHERE status = 'paid' LIMIT 3")
+        assert factory.sources["db"].calls_named("fetch_slice")[-1][2].limit is None
 
     @pytest.mark.parametrize("limit", ["LIMIT 10 PERCENT", "LIMIT 10%"])
     def test_a_percentage(self, big, limit):
@@ -56,8 +62,8 @@ class TestLimitIsNotReadAtTheSourceUnlessEverythingElseIs:
         assert len(_rows(big, f"SELECT id FROM db.big WHERE status = 'paid' {limit}")) == 150
 
     def test_two_conditions_with_one_column_and_operator(self, big, factory):
-        sql = "SELECT id FROM db.big WHERE status != 'paid' AND status != 'new' LIMIT 1"
-        assert _rows(big, sql) == []
+        sql = "SELECT x FROM db.big WHERE x != 0 AND x != 1 LIMIT 1"
+        assert _rows(big, sql) == [(2,)]
         spec = big.query.planner.plan_query(sql).targets[0].spec
         assert len(spec.predicates) == 1 and spec.limit is None
 
@@ -97,7 +103,7 @@ class TestJoinsThatAreNotInner:
         held, release = threading.Event(), threading.Event()
 
         def reload_in_progress():
-            with app.sources._load_lock(app.catalog.list_tables()[0]):
+            with app.sources._load_lock(app.catalog.list_tables()[0].full_name):
                 held.set()
                 release.wait(5)
 
@@ -134,13 +140,21 @@ class TestALiteralIsPushedOnlyAgainstItsOwnKindOfColumn:
         ("predicate", "column_type", "expected"),
         [
             (Predicate("zip", "eq", 123), "varchar", False),
-            (Predicate("amount", "gt", "10"), "double", False),
+            # Recast to the column's kind, as DuckDB casts the literal.
+            (Predicate("amount", "gt", "10"), "double", True),
+            (Predicate("id", "eq", "4.5"), "integer", False),
             (Predicate("amount", "gt", 10), "double", True),
             (Predicate("id", "in", (1, 2)), "bigint", True),
             (Predicate("name", "eq", "a"), "varchar", True),
             (Predicate("d", "gte", "2024-01-01"), "date", True),
             (Predicate("flag", "eq", True), "boolean", True),
-            (Predicate("flag", "eq", 1), "boolean", False),
+            (Predicate("flag", "eq", 1), "boolean", True),
+            (Predicate("flag", "eq", 2), "boolean", False),
+            # The source's collation decides these on text.
+            (Predicate("name", "gt", "a"), "varchar", False),
+            (Predicate("name", "ne", "a"), "varchar", False),
+            (Predicate("name", "like", "a\\_b"), "varchar", False),
+            (Predicate("name", "like", "a%"), "varchar", True),
             (Predicate("n", "eq", True), "integer", False),
             (Predicate("anything", "is_null", True), None, True),
             (Predicate("payload", "eq", "x"), "json", False),
@@ -156,7 +170,12 @@ class TestALiteralIsPushedOnlyAgainstItsOwnKindOfColumn:
 
     def test_load_table_says_so(self, big):
         result = big.tools.execute("load_table", {"table": "db.big", "where": "zip = 123"})
-        assert "does not match column 'zip'" in result["error"]
+        assert "on column 'zip'" in result["error"]
+
+    def test_a_quoted_number_on_a_number_column_is_sent_as_a_number(self, big):
+        plan = big.query.planner.plan_query("SELECT id FROM db.big WHERE id = '42'")
+        assert plan.targets[0].spec.predicates == (Predicate("id", "eq", 42),)
+        assert _rows(big, "SELECT id FROM db.big WHERE id = '42'") == [(42,)]
 
 
 class TestASliceCoversOnlyWhatItProvablyHolds:
@@ -347,8 +366,29 @@ class TestLoadLimitsCannotBeSidestepped:
 
     def test_create_view(self, huge):
         result = huge.tools.execute("create_view", {"name": "v", "sql": "SELECT * FROM db.t"})
-        assert "Refusing to load db.t" in result["error"]
+        assert "loads the tables it reads whole, and db.t" in result["error"]
+        # Only remedies that work for a view: no "add a WHERE", no load_table.
+        assert "query_data" in result["error"] and "load_table" not in result["error"]
         assert not huge.catalog.is_loaded("db.t")
+
+    def test_a_failed_view_refresh_leaves_no_stale_cache(self, app, factory):
+        app.sources.connect("db", {"type": "fake", "tables": {"small": SMALL, "t2": SMALL}})
+        sql = "SELECT count(*) AS n FROM db.small s JOIN db.t2 t ON s.cid = t.cid"
+        app.tools.execute("create_view", {"name": "v", "sql": sql})
+        assert app.query.sql("SELECT count(*) FROM db.small").rows == [(20,)]
+        factory.sources["db"].set_table("small", [*SMALL, {"cid": 99, "country": "US"}])
+        source = factory.sources["db"]
+        original = source.fetch_slice
+
+        def fail_on_t2(table, spec, max_rows=None):
+            if table == "t2":
+                raise QueryError("t2 is unavailable")
+            return original(table, spec, max_rows=max_rows)
+
+        source.fetch_slice = fail_on_t2
+        assert "error" in app.tools.execute("refresh_view", {"name": "v"})
+        # small was re-read before t2 failed, so the cached 20 is out of date.
+        assert app.query.sql("SELECT count(*) FROM db.small").rows == [(21,)]
 
 
 class TestViewTimers:
@@ -495,27 +535,29 @@ class TestQueryTimeout:
 
 
 class TestWarpRetries:
-    def test_a_post_is_sent_once(self):
+    def test_a_raw_query_is_sent_once_and_an_export_is_retried(self):
         from fusion.adapters.outbound.warp.connection_pool import ConnectionPool
 
-        pool = ConnectionPool()
+        pool = ConnectionPool(max_retries=3)
         try:
-            retry = pool.session.get_adapter("http://x").max_retries
-            assert "POST" not in retry.allowed_methods
-            assert "GET" in retry.allowed_methods
+            retried = pool.session.get_adapter("http://x").max_retries
+            assert "POST" in retried.allowed_methods  # an export POST is a read
+            assert 500 not in retried.status_forcelist  # asking again gets the same 500
+            assert pool._once.get_adapter("http://x").max_retries.total == 0
         finally:
             pool.close()
 
-    def test_a_query_the_database_rejected_does_not_count_against_the_source(self):
+    def test_a_500_does_not_count_against_the_source_on_any_route(self):
         from fusion.adapters.outbound.warp.http import HttpTransportError, is_transport_failure
 
         base = "http://w/api/v1/db"
-        rejected = HttpTransportError("HTTP 500", status=500, url=f"{base}/query/execute")
-        assert not is_transport_failure(rejected)
-        assert is_transport_failure(HttpTransportError("HTTP 500", status=500, url=f"{base}/t"))
-        assert is_transport_failure(
-            HttpTransportError("HTTP 503", status=503, url=f"{base}/query/execute")
-        )
+        for route in ("/query/execute", "/t", "/t/export"):
+            # Warp answers 500 when the database rejects the statement.
+            assert not is_transport_failure(
+                HttpTransportError("HTTP 500", status=500, url=base + route)
+            )
+        for status in (502, 503, 504, 408, 429):
+            assert is_transport_failure(HttpTransportError("x", status=status, url=base + "/t"))
 
 
 class TestRateLimitOrder:
@@ -554,8 +596,8 @@ class TestSettingsRanges:
             {"rate_limit": "garbage"},
             {"rate_limit": "0/minute"},
             {"cache_max_entries": 0},
-            {"backup_interval": 0},
-            {"backup_retention_days": 0},
+            {"backup_enabled": True, "backup_interval": 0},
+            {"backup_enabled": True, "backup_retention_days": 0},
             {"threads": 0},
             {"port": 99999},
             {"warp_timeout": float("nan")},
@@ -576,6 +618,11 @@ class TestSettingsRanges:
         from fusion.application.settings import Settings
 
         assert Settings(**overrides).validate()
+
+    def test_the_backup_schedule_is_checked_only_when_backups_run(self):
+        from fusion.application.settings import Settings
+
+        assert Settings(backup_interval=0, backup_retention_days=0).validate() == []
 
     def test_the_defaults_and_common_rate_forms_pass(self):
         from fusion.application.settings import Settings
@@ -686,5 +733,162 @@ def test_two_backups_in_one_second_are_two_backups(tmp_path, settings, scheduler
         app.query.sql("SELECT 1")
         app.backup.restore_backup(app.backup.list_backups()[0].path)
         assert app.cache.stats()["cached_queries"] == 0
+    finally:
+        app.close()
+
+
+class TestSecondRound:
+    """The findings left after the first round of fixes."""
+
+    def test_different_slices_of_one_table_load_side_by_side(self, app, factory):
+        import threading
+        import time
+
+        app.sources.connect("db", {"type": "fake", "tables": {"big": BIG}})
+        source = factory.sources["db"]
+        original = source.fetch_slice
+        inside, peak, guard = [0], [0], threading.Lock()
+
+        def slow(table, spec, max_rows=None):
+            with guard:
+                inside[0] += 1
+                peak[0] = max(peak[0], inside[0])
+            time.sleep(0.3)
+            with guard:
+                inside[0] -= 1
+            return original(table, spec, max_rows=max_rows)
+
+        source.fetch_slice = slow
+        specs = [
+            SliceSpec(predicates=(Predicate("x", "eq", 0),)),
+            SliceSpec(predicates=(Predicate("x", "eq", 1),)),
+        ]
+        from fusion.domain.models import TableRef
+        from fusion.domain.policy import TargetPlan
+
+        ref = TableRef("db", "big")
+        threads = [
+            threading.Thread(
+                target=app.sources.ensure_slices, args=([TargetPlan(ref, s, "load_slice")],)
+            )
+            for s in specs
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert peak[0] == 2
+
+    def test_a_request_that_waited_reuses_the_slice_it_waited_for(self, app, factory):
+        import threading
+        import time
+
+        from fusion.domain.models import TableRef
+        from fusion.domain.policy import TargetPlan
+
+        app.sources.connect("db", {"type": "fake", "tables": {"big": BIG}})
+        ref = TableRef("db", "big")
+        spec = SliceSpec(predicates=(Predicate("x", "eq", 0),))
+        target = TargetPlan(ref, spec, "load_slice")
+        lock = app.sources._load_lock(spec.table_name_for(ref))
+        lock.acquire()
+        waiter = threading.Thread(target=app.sources.ensure_slices, args=([target],))
+        waiter.start()
+        time.sleep(0.2)  # let the waiter reach the lock and block on it
+        try:
+            app.sources.ensure_slices([target])  # the "first" request, same thread: reentrant
+        finally:
+            lock.release()
+        waiter.join()
+        assert len(factory.sources["db"].calls_named("fetch_slice")) == 1
+
+    def test_a_pushed_down_query_asks_the_source_for_101_rows(self, app_lazy, factory):
+        app_lazy.tools.execute("query_data", {"sql": "SELECT * FROM warp_main.users"})
+        sent = factory.sources["warp_main"].calls_named("execute_query")[-1][1]
+        assert sent.rstrip().endswith("LIMIT 101")
+
+    def test_one_watchdog_thread_serves_every_query(self, settings, scheduler, factory):
+        import threading
+
+        from fusion.bootstrap import build_app
+
+        app = build_app(
+            replace(settings, query_timeout=30), scheduler=scheduler, source_factory=factory
+        )
+        try:
+            before = threading.active_count()
+            for _ in range(50):
+                app.query.sql("SELECT 1", use_cache=False)
+            assert threading.active_count() - before <= 1
+        finally:
+            app.close()
+
+    def test_views_on_one_table_read_it_once_per_pass(self, app, factory):
+        app.sources.connect("db", {"type": "fake", "tables": {"small": SMALL}})
+        for name in ("a", "b", "c"):
+            app.tools.execute("create_view", {"name": name, "sql": "SELECT count(*) FROM db.small"})
+        before = len(factory.sources["db"].calls_named("fetch_slice"))
+        app.views.refresh_all()
+        # The tables were just loaded by create_view, so this pass reads none.
+        assert len(factory.sources["db"].calls_named("fetch_slice")) == before
+
+    def test_an_unchanged_newest_tick_rewrites_nothing(self, settings, scheduler, factory):
+        from fusion.bootstrap import build_app
+
+        rows = [{"id": i, "v": "a", "at": 100} for i in range(5)]
+        app = build_app(
+            replace(
+                settings,
+                refresh_config='{"db.t": {"watermark_column": "at", "key_columns": ["id"]}}',
+            ),
+            scheduler=scheduler,
+            source_factory=factory,
+        )
+        try:
+            app.sources.connect("db", {"type": "fake", "tables": {"t": rows}}, fetch_all=True)
+            spec = app.sources._refresh_specs["db.t"]
+            ref = app.catalog.list_tables()[0]
+            assert app.sources._refresh_incrementally(ref, factory.sources["db"], spec) == 5
+            assert (
+                app.store.upsert(
+                    "db.t",
+                    factory.sources["db"].fetch_slice("t", SliceSpec.FULL),
+                    ["id"],
+                )
+                == 0
+            )
+        finally:
+            app.close()
+
+    def test_an_eviction_waits_for_a_load_of_the_same_slice(self, app):
+        import threading
+
+        app.sources.connect("db", {"type": "fake", "tables": {"small": SMALL}})
+        lock = app.sources._load_lock("db.small__s_x")
+        lock.acquire()
+        done = threading.Event()
+        evictor = threading.Thread(
+            target=lambda: (app.sources.evict_slice("db.small__s_x"), done.set())
+        )
+        evictor.start()
+        assert not done.wait(0.2)
+        lock.release()
+        evictor.join(2)
+        assert done.is_set()
+
+
+def test_paged_reads_are_ordered_by_the_primary_key(settings, scheduler):
+    # OFFSET over an unordered scan may skip or repeat rows between pages.
+    transport = FakeWarpTransport(
+        {"users": [{"id": i, "name": f"u{i}"} for i in range(30)]},
+        database="ecommerce",
+        export_enabled=False,
+        raw_query=False,
+    )
+    app = _e2e_app(settings, scheduler, transport)
+    try:
+        assert app.query.sql("SELECT count(*) FROM ecommerce.users").rows == [(30,)]
+        pages = [p for m, u, p in transport.requests if "offset" in (p or {})]
+        assert pages and all(p.get("sort") == "id:asc" for p in pages)
     finally:
         app.close()

@@ -63,7 +63,7 @@ Services:
 ```bash
 curl http://localhost:9000/health
 curl -H "X-API-Key: your-api-key" http://localhost:9000/readiness
-open http://localhost:9000/docs
+open http://localhost:9000/docs   # not in production unless FUSION_DEBUG_ENDPOINTS=true
 ```
 
 ## Configuration
@@ -95,6 +95,8 @@ All settings are environment variables read once at startup by `Settings.from_en
 | `FUSION_IN_CHUNK_SIZE` | `1000` | Keys per request when passing them |
 | `FUSION_REFRESH_CONFIG` | *(none)* | JSON: `{"src.table": {"watermark_column": "...", "key_columns": [...]}}` |
 | `FUSION_CACHE_TTL` / `FUSION_CACHE_MAX_ENTRIES` | `300` / `500` | Query cache |
+| `FUSION_TIMEZONE` | `UTC` | Time zone the store reads text as timestamps in; set it to your sources' session time zone so a pushed condition on a zoned timestamp means the same instant on both sides |
+| `FUSION_MAX_REQUEST_BYTES` | `1048576` | Largest REST request body (`413` above it; 0 = no limit) |
 | `FUSION_QUERY_TIMEOUT` | `300` | Seconds a query, or building a materialized view, may run on the store before it is interrupted (0 = no limit; at most a week) |
 | `FUSION_BACKUP_ENABLED` | `false` | Enable automated backups |
 | `FUSION_BACKUP_INTERVAL` / `FUSION_BACKUP_RETENTION_DAYS` | `3600` / `7` | Backup schedule and retention (at least 60 seconds / 1 day) |
@@ -116,13 +118,13 @@ See `.env.production.example` for a complete template.
 
 ### Authentication
 
-All requests except `/health`, `/readiness` and the OpenAPI docs require the key:
+All requests except `/health`, `/readiness` and the OpenAPI docs require the key. The docs (`/docs`, `/redoc`, `/openapi.json`) follow `FUSION_DEBUG_ENDPOINTS`, so production serves them only when that is set to `true`:
 
 ```bash
 curl -H "X-API-Key: your-api-key" http://localhost:9000/sources
 ```
 
-Missing key → `401`; wrong key → `403`.
+Missing key → `401`; wrong key → `403`; too many failed keys from one address → `429` (counted on every path).
 
 ### Rate Limiting
 

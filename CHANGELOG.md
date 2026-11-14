@@ -13,17 +13,24 @@ All notable changes to Fusion OLAP Engine.
   the comparison is paired. Grades by result set rather than SQL text, and
   reports execution accuracy with Wilson intervals, hallucinated-identifier
   rate, exact match (a diagnostic, not a score) and median latency, compared
-  with McNemar's exact test. The decision thresholds are applied mechanically
-  because they were fixed before the run. 40 questions, half Turkish, over a
+  with McNemar's exact test and with one vote per question. The decision
+  thresholds are applied mechanically; they arrived in the same commit as the
+  results, so the repository cannot show they were fixed first. 40 questions, half Turkish, over a
   banking-shaped schema, with gold queries stored per dialect because Oracle
   and SQL Server genuinely differ where it matters. `bench/` sits outside the
   `fusion` package, so it affects neither the coverage gate nor the
   architecture rules. See `bench/README.md` for what the runs established —
   including that the constrained arm removed all 17 of the unconstrained
   arm's form errors, and that seeding a model with a deterministic proposal
-  beat every other arm with no hallucination at all
+  gave the best DSL arm at 7b and tied the catalog-SQL arm (and did worse
+  than no model at all at 1.5b)
 
 ### Security
+- **A second statement could hide behind a DuckDB escape string.** `SELECT E'\'' ; DROP TABLE ...` passed the guardrail (which parsed SQL in sqlglot's generic dialect) and DuckDB ran the DROP. User SQL is now parsed strictly as DuckDB, so a statement the parser cannot read whole is refused and every statement in it is seen. The analyzer reads the same dialect, which also stops it pushing a condition that sits under an `OR` hidden that way, or slicing a `POSITIONAL JOIN`.
+- `SELECT ... FOR UPDATE/SHARE` is refused (pushed down, it took row locks at the source).
+- Request bodies over `FUSION_MAX_REQUEST_BYTES` (default 1 MiB) are refused with 413, declared or streamed.
+- The OpenAPI docs follow `FUSION_DEBUG_ENDPOINTS`: off in production unless switched on. `repr(Settings)` no longer shows the API keys. The SSRF check also blocks AWS's IPv6 and Alibaba's metadata addresses, IPv4-mapped forms, and every address a name resolves to.
+- The benchmark's Oracle password is read from `BENCH_ORACLE_PASSWORD` instead of the source.
 - **`EXPLAIN ANALYZE` executed what it explained.** `EXPLAIN ANALYZE DELETE ...`
   passed the read-only guardrail and changed data. The statement under an
   `EXPLAIN` now has to pass on its own.
@@ -79,6 +86,31 @@ All notable changes to Fusion OLAP Engine.
   `LEFT JOIN` again.
 - A query on a table that is already loaded no longer waits for a reload of
   that table to finish.
+- Text `!=` and ranges are no longer sent to the source, whose collation
+  (case-insensitive in MySQL, linguistic in Postgres) can drop rows DuckDB
+  keeps; nor is a LIMIT beside a text condition, nor a LIKE pattern with a
+  backslash. A quoted number on a number column (`id = '42'`) and `0`/`1` on
+  a boolean column are sent recast, as DuckDB reads them, instead of being
+  left out.
+- Loads are locked per slice, not per table: different slices of one table
+  load side by side, a request that waited reuses the slice it waited for,
+  and an eviction waits for a load of the same slice.
+- `load_table` with a filter answers to the same size limit, budget and
+  refusal text as a query, and reuses the same slice already loaded.
+- A failed view refresh no longer leaves cached answers about a table it had
+  already re-read; a view refused for size names what works for a view.
+- A thousand nested `EXPLAIN`s are a refusal, not a 500.
+- More conditions that could drop rows at the source are now kept local: a quoted decimal on a DECIMAL column (DuckDB casts it to the column's scale), any literal on a REAL/FLOAT column, a fractional number on an integer column, text on a zoned timestamp without an explicit offset, `!=`/LIKE on uuid, and anything on an array. Warp's `/schema` types are kept (`decimal(10,2)`, `timestamp with time zone`, `uuid`) instead of being reduced to their kind, and a sampled schema types ISO dates as dates. The store reads text in `FUSION_TIMEZONE` (default UTC).
+- Two conditions on one column and operator are merged exactly (`x > 5 AND x > 10`, two `IN` lists, a semi-join's keys over the query's own `IN`) instead of one being dropped.
+- A column alias list (`FROM t AS b(x, y)`) is no longer sliced as if `x` were the column `x`.
+- `search_data`, `load_table` of a whole table and `create_view` answer to the slice limit and the row budget like a query. The semi-join holds the slice's writer lock, a planned reuse of a slice evicted since loads it again, and the "loaded meanwhile" check always runs.
+- Append-mode incremental refresh re-reads the newest watermark value, so a row arriving in it is no longer lost.
+- A body cut off mid-read, a refused page and a database's 500 are classified properly: the first is "Source unavailable", the other two are the request's error (a 500 no longer counts against the circuit breaker on any route). Export POSTs are retried again; raw queries are still sent once.
+- `time_shift` of a row with no period is NULL; `aggregate_data`/`search_data` quote column names (`order`, `group`); a bare table name (`FROM users`) works; a source table named `mv_*` is a table; columns are sent to the source spelled as the catalog has them; a bad aggregation in `FUSION_SEMANTIC_MODEL` is skipped, not fatal; `fusion-mcp` honours `FUSION_LOG_LEVEL`; the demo's federation query no longer counts each payment once per session.
+- The MCP server gives each tool the same description OpenAI clients get (the metric grammar included).
+- A whole-table load that the source cut at its own export limit (Warp's `export.max_rows`) is refused instead of answering every COUNT and SUM short. A filtered slice cut that way is still kept, marked incomplete.
+- `DELETE /views/{name}` drops a materialized view, its timer and its definition.
+- The architecture test no longer lets the bare `fusion` entry allow every `fusion.*` import. The benchmark runs model SQL through the read-only guardrail before executing it on the connection every arm shares.
 - Two backups in the same second overwrote each other.
 - `query_metrics` raised `AttributeError` instead of a usable message when a
   caller passed `order_by` as a list, or `metrics`/`dimensions`/`filters` with
@@ -92,7 +124,15 @@ All notable changes to Fusion OLAP Engine.
   returned (at most 100), no longer the query's total. Repeated column names
   come back as `id`, `id_2`.
 - `FUSION_QUERY_TIMEOUT` (default 300 s, at most a week) interrupts a query
-  on the store, and building a materialized view.
+  on the store, and building a materialized view. Closing the store interrupts a running query.
+- A pushed-down query is capped with `LIMIT 101`; a source that refuses LIMIT (SQL Server, Oracle) gets it uncapped from then on.
+- Paged reads are ordered by the primary key from `/schema`.
+- An unknown refresh interval is refused instead of meaning manual. The backup schedule is validated only when backups are on.
+- `fusion-rest --reload` is accepted but ignored (it never worked: the app is built in-process).
+- A pushed-down `query_data` asks the source for at most 101 rows.
+- One watchdog thread enforces the query timeout, instead of one thread per
+  query. Views sharing a table re-read it once per refresh pass, and a keyed
+  incremental refresh that finds nothing changed writes nothing.
 - A scheduled view refresh must be at least 30 seconds apart.
 - `Settings.validate()` checks numeric ranges and the rate-limit format
   (every form slowapi reads); `fusion-mcp` runs it too, without the HTTP-only

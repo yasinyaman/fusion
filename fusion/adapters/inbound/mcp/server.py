@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from fusion.application.app import FusionApp
+from fusion.application.tool_schemas import TOOL_DEFINITIONS
 
 
 def _dump(result: dict[str, Any]) -> str:
@@ -22,13 +23,16 @@ def create_mcp_server(fusion: FusionApp, name: str = "fusion") -> Any:
 
     server = MCPServer(name)
     tools = fusion.tools
+    # The descriptions an OpenAI client gets, so both kinds of caller read the
+    # same contract (query_metrics carries the whole metric grammar).
+    descriptions = {d["name"]: d["description"] for d in TOOL_DEFINITIONS}
 
-    @server.tool()
+    @server.tool(description=descriptions["list_sources"])
     def list_sources() -> str:
         """List all connected data sources and their tables with row counts."""
         return _dump(tools.execute("list_sources"))
 
-    @server.tool()
+    @server.tool(description=descriptions["describe_table"])
     def describe_table(table: str) -> str:
         """Show detailed schema for a table (columns, types, row count).
 
@@ -36,12 +40,12 @@ def create_mcp_server(fusion: FusionApp, name: str = "fusion") -> Any:
         """
         return _dump(tools.execute("describe_table", {"table": table}))
 
-    @server.tool()
+    @server.tool(description=descriptions["query_data"])
     def query_data(sql: str) -> str:
         """Execute an analytical SQL query on DuckDB. Only SELECT queries allowed. Max 100 rows."""
         return _dump(tools.execute("query_data", {"sql": sql}))
 
-    @server.tool()
+    @server.tool(description=descriptions["search_data"])
     def search_data(table: str, filter_column: str, filter_value: str, limit: int = 20) -> str:
         """Search rows in a table matching a filter.
 
@@ -59,7 +63,7 @@ def create_mcp_server(fusion: FusionApp, name: str = "fusion") -> Any:
             )
         )
 
-    @server.tool()
+    @server.tool(description=descriptions["aggregate_data"])
     def aggregate_data(table: str, group_by: str, agg_column: str, agg_func: str) -> str:
         """Run GROUP BY aggregation. agg_func: SUM, AVG, COUNT, MIN, or MAX."""
         return _dump(
@@ -74,34 +78,34 @@ def create_mcp_server(fusion: FusionApp, name: str = "fusion") -> Any:
             )
         )
 
-    @server.tool()
+    @server.tool(description=descriptions["create_view"])
     def create_view(name: str, sql: str, refresh: str = "manual") -> str:
         """Create a materialized view (cached aggregation). refresh: 'manual', 'hourly', 'daily'."""
         return _dump(tools.execute("create_view", {"name": name, "sql": sql, "refresh": refresh}))
 
-    @server.tool()
+    @server.tool(description=descriptions["list_views"])
     def list_views() -> str:
         """List all materialized views with refresh schedule and last refresh time."""
         return _dump(tools.execute("list_views"))
 
-    @server.tool()
+    @server.tool(description=descriptions["refresh_view"])
     def refresh_view(name: str) -> str:
         """Manually refresh a materialized view to get latest data."""
         return _dump(tools.execute("refresh_view", {"name": name}))
 
-    @server.tool()
+    @server.tool(description=descriptions["load_table"])
     def load_table(table: str, where: str | None = None, columns: list[str] | None = None) -> str:
         """Load a table, or only the rows and columns ``where``/``columns`` describe."""
         return _dump(
             tools.execute("load_table", {"table": table, "where": where, "columns": columns})
         )
 
-    @server.tool()
+    @server.tool(description=descriptions["list_metrics"])
     def list_metrics(table: str | None = None) -> str:
         """Measures, dimensions, grains and transforms available for a table."""
         return _dump(tools.execute("list_metrics", {"table": table}))
 
-    @server.tool()
+    @server.tool(description=descriptions["query_metrics"])
     def query_metrics(
         table: str,
         metrics: list[str],
@@ -125,7 +129,7 @@ def create_mcp_server(fusion: FusionApp, name: str = "fusion") -> Any:
             )
         )
 
-    @server.tool()
+    @server.tool(description=descriptions["cache_stats"])
     def cache_stats() -> str:
         """Show query cache statistics: hit rate, entry count, memory usage."""
         return _dump(tools.execute("cache_stats"))

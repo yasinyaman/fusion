@@ -15,9 +15,10 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
-from fusion.domain.errors import QueryError
+from fusion.domain.errors import ConnectionError, QueryError
 from fusion.domain.models import ColumnInfo, RowSet, TableSchema
 from fusion.domain.slices import Predicate, SliceSpec
 
@@ -96,8 +97,9 @@ class ArrowRowStream:
             return
         self._taken = True
         columns = self.columns
-        for batch in self._reader:
-            yield _rowset(batch.to_pylist(), columns)
+        with _read_failures_as_outage("Arrow"):
+            for batch in self._reader:
+                yield _rowset(batch.to_pylist(), columns)
 
     def close(self) -> None:
         if self._response is not None:
@@ -131,16 +133,17 @@ class NdjsonRowStream:
 
     def __iter__(self) -> Iterator[RowSet]:
         batch: list[dict[str, Any]] = []
-        for line in self._response.iter_lines():
-            if not line:
-                continue
-            try:
-                batch.append(json.loads(line))
-            except ValueError as e:
-                raise QueryError(f"Malformed NDJSON row from Warp: {e}") from e
-            if len(batch) >= self._batch_size:
-                yield self._batch(batch)
-                batch = []
+        with _read_failures_as_outage("NDJSON"):
+            for line in self._response.iter_lines():
+                if not line:
+                    continue
+                try:
+                    batch.append(json.loads(line))
+                except ValueError as e:
+                    raise QueryError(f"Malformed NDJSON row from Warp: {e}") from e
+                if len(batch) >= self._batch_size:
+                    yield self._batch(batch)
+                    batch = []
         if batch:
             yield self._batch(batch)
 
@@ -168,8 +171,10 @@ class PagedRowStream:
         spec: SliceSpec = SliceSpec.FULL,
         page_size: int = 1000,
         max_rows: int | None = None,
+        sort: str | None = None,
     ) -> None:
         self._pager = pager
+        self._sort = sort
         self._table = table
         self._spec = spec
         self._page_size = max(1, page_size)
@@ -207,6 +212,7 @@ class PagedRowStream:
                         offset=offset,
                         fields=fields,
                         filters=predicates,
+                        **({"sort": self._sort} if self._sort else {}),
                     )
                 )
                 if not page:
@@ -227,6 +233,23 @@ class PagedRowStream:
 
     def close(self) -> None:
         return None
+
+
+@contextmanager
+def _read_failures_as_outage(kind: str) -> Iterator[None]:
+    """A body that stops arriving after the headers did is the source failing.
+
+    ``requests``/``urllib3`` raise their own exceptions mid-body (a dropped
+    connection, a chunked body cut short), which are not the domain's
+    ConnectionError, so without this they reached callers as internal errors.
+    """
+    import requests
+    import urllib3
+
+    try:
+        yield
+    except (requests.RequestException, urllib3.exceptions.HTTPError) as e:
+        raise ConnectionError(f"Warp's {kind} export ended early: {e}") from e
 
 
 def _tightest(*limits: int | None) -> int | None:

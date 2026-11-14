@@ -255,7 +255,11 @@ class TestSlices:
         plan = self._plan(SliceSpec.FULL, "load_full")
         sliced.sources.ensure_slices([plan])
         factory.sources["db"].set_table("users", [{"id": 9, "name": "Zoe", "segment": "basic"}])
+        # A load_full plan for a table already loaded is satisfied, not redone;
+        # a reload is what a refresh asks for.
         sliced.sources.ensure_slices([plan])
+        assert len(factory.sources["db"].calls_named("fetch_slice")) == 1
+        sliced.sources.refresh_tables(["db.users"])
         assert sliced.store.execute("SELECT name FROM db.users").rows == [("Zoe",)]
 
     def test_evict_slice_drops_the_table_and_forgets_it(self, sliced):
@@ -304,10 +308,15 @@ class TestSlices:
                 return None
 
         factory.sources["db"].fetch_slice = lambda *a, **k: Capped()
-        sliced.sources.ensure_slices([self._plan(SliceSpec.FULL, "load_full")])
+        # Whole: refused, since every answer over the first N rows is short.
+        with pytest.raises(QueryError, match="export limit of 2 rows"):
+            sliced.sources.ensure_slices([self._plan(SliceSpec.FULL, "load_full")])
+        assert sliced.catalog.slices_of("db.users") == []
+        # A slice: kept, but marked so that it never answers a narrower query.
+        sliced.sources.ensure_slices([self._plan()])
         loaded = sliced.catalog.slices_of("db.users")[0]
         assert loaded.complete is False
-        assert not sliced.catalog.is_loaded("db.users")  # never answers a narrower query
+        assert not sliced.catalog.is_loaded("db.users")
 
 
 ORDERS_V2 = [

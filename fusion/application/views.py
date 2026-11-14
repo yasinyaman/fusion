@@ -48,6 +48,12 @@ class MaterializedViewService:
             raise QueryError(f"Invalid view name: '{name}'. Use alphanumeric and underscore only.")
         self._validator.validate(sql)
         interval = parse_refresh_interval(refresh)
+        if interval == 0 and refresh.lower().strip() != "manual":
+            # A view that silently never refreshes is worse than a refusal.
+            raise QueryError(
+                f"Unknown refresh interval '{refresh}'. Use 'manual', 'hourly', 'daily' "
+                "or 'every N seconds|minutes|hours|days'."
+            )
         if 0 < interval < MIN_REFRESH_SECONDS:
             # Each refresh re-reads the view's tables from their source.
             raise QueryError(
@@ -70,8 +76,6 @@ class MaterializedViewService:
 
         if interval > 0:
             self._schedule(name, interval)
-        elif refresh.lower().strip() != "manual":
-            logger.warning("Unknown refresh interval '%s' for view '%s'; manual", refresh, name)
         logger.info("Created materialized view '%s' (refresh=%s)", name, refresh)
         return spec
 
@@ -79,11 +83,13 @@ class MaterializedViewService:
         # Load any source tables the view reads before creating it, so a view
         # can be defined before its tables were ever queried.
         plan = self._planner.plan_for_sql(spec.sql)
-        for ref in plan.targets:
-            # A view reads whole tables, so it answers to the whole-table limit.
-            refusal = "" if self._sources.is_loaded(ref) else self._planner.full_load_refusal(ref)
-            if refusal:
-                raise QueryError(f"A materialized view loads the tables it reads. {refusal}")
+        # A view reads whole tables, so it answers to the whole-table limit
+        # and to the row budget, as a query's loads do.
+        loads = self._planner.plan_full_loads(plan.targets)
+        if loads.is_refused:
+            raise QueryError(loads.refusal)
+        for evicted in loads.evictions:
+            self._sources.evict_slice(evicted)
         if not plan.is_empty():
             self._sources.ensure_loaded(plan.targets)
         self._store.create_table_as(spec.table_name, spec.sql)
@@ -92,12 +98,19 @@ class MaterializedViewService:
         if self._on_data_changed is not None:
             self._on_data_changed()
 
-    def refresh(self, name: str, force: bool = False) -> None:
+    def refresh(self, name: str, force: bool = False, max_age: float | None = None) -> None:
+        """Re-read the view's tables, then recompute it.
+
+        ``max_age`` lets a table read that recently stand (another view's
+        refresh just read it); None re-reads every table.
+        """
         spec = self.get(name)
         try:
             # Recomputing from the tables as they were loaded would return the
             # same rows; a refresh starts by re-reading them.
-            self._sources.refresh_tables(self._planner.plan_for_sql(spec.sql).targets)
+            self._sources.refresh_tables(
+                self._planner.plan_for_sql(spec.sql).targets, max_age=max_age
+            )
             self._materialize(spec)
         except QueryError as e:
             raise QueryError(f"Failed to refresh view '{name}': {e}") from e
@@ -107,7 +120,8 @@ class MaterializedViewService:
     def refresh_all(self, force: bool = False) -> None:
         for spec in sorted(self._views.values(), key=lambda s: s.priority_rank):
             try:
-                self.refresh(spec.name, force=force)
+                # One pass reads a table shared by several views once.
+                self.refresh(spec.name, force=force, max_age=MIN_REFRESH_SECONDS)
             except Exception as e:
                 logger.error("Failed to refresh view '%s': %s", spec.name, e)
                 if force:
@@ -161,7 +175,9 @@ class MaterializedViewService:
 
         def refresh_job() -> None:
             if name in self._views:
-                self.refresh(name)
+                # Views on one timer share their tables' re-read: a table read
+                # within half an interval is fresh enough for this run.
+                self.refresh(name, max_age=interval / 2)
 
         self._jobs[name] = self._scheduler.every(interval, refresh_job, name=f"mv:{name}")
 

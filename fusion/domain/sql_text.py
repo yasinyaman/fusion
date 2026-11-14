@@ -8,22 +8,6 @@ from __future__ import annotations
 
 import re
 
-# Keywords that indicate destructive statements (fallback when parsing fails).
-DANGEROUS_KEYWORDS = frozenset(
-    {
-        "DROP",
-        "DELETE",
-        "INSERT",
-        "UPDATE",
-        "ALTER",
-        "TRUNCATE",
-        "GRANT",
-        "REVOKE",
-        "CREATE",
-        "REPLACE",
-    }
-)
-
 # DuckDB functions that reach the local filesystem, the network, or the
 # extension loader. They parse as ordinary functions inside a valid SELECT, so
 # a statement-type allowlist alone does not catch them. Defense-in-depth on top
@@ -121,15 +105,6 @@ def find_forbidden_function(sql: str) -> str | None:
     """Name of the first forbidden function call, or None."""
     match = FORBIDDEN_FUNCTION_RE.search(clean_sql(sql))
     return match.group(1).lower() if match else None
-
-
-def starts_with_dangerous_keyword(sql: str) -> str | None:
-    """The dangerous keyword the statement starts with, or None."""
-    upper = sql.upper().lstrip()
-    for keyword in DANGEROUS_KEYWORDS:
-        if upper.startswith(keyword):
-            return keyword
-    return None
 
 
 def normalize_sql_for_cache(sql: str) -> str:

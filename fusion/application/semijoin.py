@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 from fusion.domain.catalog import SchemaCatalog
@@ -56,7 +57,12 @@ class SemiJoinExecutor:
         policy: MaterializationPolicy | None = None,
         clock: Callable[[], float] = time.time,
         max_ingest_rows: int = 0,
+        lock_for: Callable[[str], AbstractContextManager[Any]] | None = None,
     ) -> None:
+        #: The writer lock for one slice name: held from fetch to record, so an
+        #: eviction of the same name cannot land between the rename and the
+        #: catalog entry (SourceService's own loads hold the same lock).
+        self._lock_for = lock_for or (lambda _name: nullcontext())
         self._store = store
         self._catalog = catalog
         self._policy = policy or MaterializationPolicy()
@@ -76,24 +82,25 @@ class SemiJoinExecutor:
         spec = target.spec.with_predicate(Predicate(semi.target_key, "in", keys))
         table_name = spec.table_name_for(target.ref)
 
-        now = self._clock()
-        covering = self._catalog.find_covering_slice(target.ref, spec, now)
-        if covering is not None:
-            logger.info("Semi-join on %s reuses %s", target.ref.full_name, covering.table_name)
-            return covering
+        with self._lock_for(table_name):
+            now = self._clock()
+            covering = self._catalog.find_covering_slice(target.ref, spec, now)
+            if covering is not None:
+                logger.info("Semi-join on %s reuses %s", target.ref.full_name, covering.table_name)
+                return covering
 
-        count = self._fetch_in_chunks(target.ref, spec, keys, source, table_name)
-        loaded = self._catalog.record_slice(
-            LoadedSlice(
-                ref=target.ref,
-                spec=spec,
-                table_name=table_name,
-                row_count=count,
-                loaded_at=now,
-                last_used=now,
-                derived_from=f"semijoin:{semi.driver_table}.{semi.driver_key}",
+            count = self._fetch_in_chunks(target.ref, spec, keys, source, table_name)
+            loaded = self._catalog.record_slice(
+                LoadedSlice(
+                    ref=target.ref,
+                    spec=spec,
+                    table_name=table_name,
+                    row_count=count,
+                    loaded_at=now,
+                    last_used=now,
+                    derived_from=f"semijoin:{semi.driver_table}.{semi.driver_key}",
+                )
             )
-        )
         logger.info(
             "Semi-join loaded %d rows of %s from %d keys in %s",
             count,

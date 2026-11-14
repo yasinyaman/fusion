@@ -45,15 +45,22 @@ _FLIPPED: dict[PredicateOp, PredicateOp] = {
 # parenthesised subqueries. DDL/DML/commands are not Query subclasses.
 _ALLOWED_TYPES: tuple[type, ...] = (exp.Query,)
 
-_EXPLAIN_RE = re.compile(r"EXPLAIN\s+(ANALYZE\s+)?", re.IGNORECASE)
+#: ``EXPLAIN``, ``EXPLAIN ANALYZE`` and ``EXPLAIN (FORMAT JSON, ...)``.
+_EXPLAIN_RE = re.compile(r"EXPLAIN\s+(ANALYZE\s+)?(\([^()]*\)\s*)?", re.IGNORECASE)
+
+#: The dialect user SQL is executed in, and therefore the one it is read in.
+#: The generic dialect reads ``E'\''`` as an unterminated string and would hide
+#: a second statement behind it from every check below.
+_DUCKDB = "duckdb"
 
 
 class SqlglotValidator:
     """Allows only read-only query statements.
 
-    Layers, in order: empty check, multi-statement detection, forbidden
-    function denylist (file/network/extension access), then an AST allowlist
-    with a keyword fallback for SQL sqlglot cannot parse.
+    Layers, in order: empty check, EXPLAIN unwrapping, multi-statement
+    detection, forbidden function denylist (file/network/extension access),
+    then an AST allowlist and a check of the parsed tree for file reads. SQL
+    sqlglot cannot parse is refused.
     """
 
     def __init__(self, allow_create_mv: bool = False) -> None:
@@ -64,11 +71,15 @@ class SqlglotValidator:
         if not stripped:
             raise GuardrailViolation("Empty SQL query")
 
+        # EXPLAIN ANALYZE executes what it explains, so the statement
+        # underneath has to pass on its own. A loop, not recursion: a
+        # thousand nested EXPLAINs must be a refusal, not a RecursionError.
         explained = _EXPLAIN_RE.match(stripped)
         if explained:
-            # EXPLAIN ANALYZE executes what it explains, so the statement
-            # underneath has to pass on its own.
-            self.validate(stripped[explained.end() :])
+            while explained:
+                stripped = stripped[explained.end() :].strip()
+                explained = _EXPLAIN_RE.match(stripped)
+            self.validate(stripped)
             return
 
         if has_multiple_statements(stripped):
@@ -84,25 +95,35 @@ class SqlglotValidator:
             )
 
         try:
-            parsed = sqlglot.parse(stripped, error_level=sqlglot.ErrorLevel.IGNORE)
+            # Read as DuckDB reads it, and strictly: a parse that skips what it
+            # cannot read could skip the part that writes.
+            parsed = sqlglot.parse(stripped, read=_DUCKDB)
         except Exception:
             # What cannot be read cannot be shown to be a query.
             raise GuardrailViolation(
                 f"Blocked SQL that could not be parsed: {stripped[:100]}"
             ) from None
 
-        if not parsed:
+        statements = [s for s in parsed if s is not None and not isinstance(s, exp.Semicolon)]
+        if not statements:
             raise GuardrailViolation("Failed to parse SQL query")
-
-        for statement in parsed:
-            if statement is not None:
-                self._validate_statement(statement, stripped)
+        if len(statements) > 1:
+            raise GuardrailViolation(
+                f"Multi-statement SQL detected (possible injection): {stripped[:100]}"
+            )
+        self._validate_statement(statements[0], stripped)
 
     def _validate_statement(self, statement: exp.Expr, original_sql: str) -> None:
         if isinstance(statement, _ALLOWED_TYPES):
             if statement.args.get("into"):
                 raise GuardrailViolation(
                     f"Blocked SELECT INTO statement. Only SELECT queries are allowed: "
+                    f"{original_sql[:100]}"
+                )
+            if any(node.args.get("locks") for node in statement.find_all(exp.Select)):
+                # FOR UPDATE / FOR SHARE take row locks at a source it is pushed to.
+                raise GuardrailViolation(
+                    f"Blocked SELECT ... FOR UPDATE/SHARE: only plain reads are allowed: "
                     f"{original_sql[:100]}"
                 )
             _check_no_file_access(statement, original_sql)
@@ -156,7 +177,7 @@ class SqlglotAnalyzer:
 
     def table_references(self, sql: str) -> list[TableRef]:
         try:
-            parsed = sqlglot.parse(sql, error_level=sqlglot.ErrorLevel.IGNORE)
+            parsed = sqlglot.parse(sql, read=_DUCKDB, error_level=sqlglot.ErrorLevel.IGNORE)
         except Exception:
             logger.warning("sqlglot failed to parse SQL; no table references extracted")
             return []
@@ -181,26 +202,39 @@ class SqlglotAnalyzer:
         return refs
 
     def strip_source_prefix(self, sql: str, source: str) -> str:
+        """Drop ``source.`` qualifiers by editing the text, not regenerating it.
+
+        The SQL goes to the source, so everything else must arrive as written:
+        a regeneration drops ``NULLS LAST`` (sqlglot's default, not Postgres's)
+        and rewrites dialect-specific syntax.
+        """
+        from sqlglot.tokens import TokenType
+
         try:
-            parsed = sqlglot.parse(sql, error_level=sqlglot.ErrorLevel.IGNORE)
-            if not parsed or parsed[0] is None:
-                return sql
-            for statement in parsed:
-                if statement is None:
-                    continue
-                for table in statement.find_all(exp.Table):
-                    if table.db == source:
-                        table.set("db", None)
-            return parsed[0].sql()
+            tokens = sqlglot.Dialect.get_or_raise(_DUCKDB).tokenize(sql)
         except Exception:
-            return sql.replace(f"{source}.", "")
+            return sql
+        cuts: list[tuple[int, int]] = []
+        for here, after in zip(tokens, tokens[1:], strict=False):
+            name = here.text.strip('"').lower()
+            if (
+                here.token_type in (TokenType.VAR, TokenType.IDENTIFIER)
+                and name == source.lower()
+                and after.token_type == TokenType.DOT
+            ):
+                cuts.append((here.start, after.end + 1))
+        for start, end in reversed(cuts):
+            sql = sql[:start] + sql[end:]
+        return sql
 
     # -- query shape --------------------------------------------------------
 
     def analyze(self, sql: str) -> QueryShape:
         """Columns, pushable predicates and join keys, per table."""
         try:
-            parsed = sqlglot.parse_one(sql, error_level=sqlglot.ErrorLevel.IGNORE)
+            # Strict, as DuckDB: a lenient parse that stops early reads a WHERE
+            # cut short, and pushes a condition that sits under an OR.
+            parsed = sqlglot.parse_one(sql, read=_DUCKDB)
         except Exception:
             logger.debug("sqlglot could not parse the query; treating it as opaque")
             return UNKNOWN_SHAPE
@@ -252,12 +286,32 @@ class SqlglotAnalyzer:
 
     # -- rewriting ----------------------------------------------------------
 
+    def with_row_cap(self, sql: str, rows: int) -> str:
+        """Append ``LIMIT rows`` to a query that has none of its own.
+
+        Appended as text rather than regenerated: the SQL goes to the source in
+        the source's own dialect, which a round trip through sqlglot could change.
+        """
+        try:
+            parsed = sqlglot.parse_one(sql, read=_DUCKDB)
+        except Exception:
+            return sql
+        if not isinstance(parsed, exp.Select | exp.SetOperation):
+            return sql
+        if any(parsed.args.get(key) for key in ("limit", "offset", "fetch")):
+            return sql
+        # A newline, so a trailing ``-- comment`` cannot swallow the clause.
+        return f"{sql.rstrip().rstrip(';').rstrip()}\nLIMIT {int(rows)}"
+
     def rewrite_tables(self, sql: str, mapping: Mapping[TableRef, str]) -> str:
         """Point table references at the tables named in ``mapping``."""
         if not mapping:
             return sql
         try:
-            parsed = sqlglot.parse_one(sql, error_level=sqlglot.ErrorLevel.IGNORE)
+            # Read and written as DuckDB: the rewritten SQL runs on the store,
+            # and the generic dialect turns ``a // 2`` into ``a /  / 2`` and
+            # ``* EXCLUDE (b)`` into ``* EXCEPT (b)``.
+            parsed = sqlglot.parse_one(sql, read="duckdb", error_level=sqlglot.ErrorLevel.IGNORE)
         except Exception:
             return sql
         if parsed is None:
@@ -276,7 +330,7 @@ class SqlglotAnalyzer:
             table.set("this", exp.to_identifier(name))
             table.set("db", exp.to_identifier(schema) if schema else None)
             changed = True
-        return parsed.sql() if changed else sql
+        return parsed.sql(dialect="duckdb") if changed else sql
 
 
 # -- analysis helpers --------------------------------------------------------
@@ -301,6 +355,10 @@ def _source_tables(select: exp.Select) -> list[tuple[str, TableRef]] | None:
         return None
     for node in (from_clause.this, *(j.this for j in select.args.get("joins") or [])):
         if not isinstance(node, exp.Table):
+            return None
+        alias = node.args.get("alias")
+        if alias is not None and alias.args.get("columns"):
+            # ``t AS b(x, y)`` renames the columns: ``x`` is not the column x.
             return None
         tables.append((node.alias_or_name, TableRef(node.db or "", node.name)))
     return tables

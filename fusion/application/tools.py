@@ -32,8 +32,7 @@ from fusion.domain.identifiers import (
     validate_identifier,
 )
 from fusion.domain.models import MV_PREFIX, QueryResult, RowSet, TableRef
-from fusion.domain.policy import TargetPlan
-from fusion.domain.slices import Predicate, SliceSpec, predicate_is_pushable
+from fusion.domain.slices import Predicate, SliceSpec, column_kind
 from fusion.ports.analytics_store import AnalyticsStore
 from fusion.ports.cache import QueryCache
 from fusion.ports.data_source import PushdownCapable
@@ -41,9 +40,10 @@ from fusion.ports.sql_policy import SqlAnalyzer
 
 _WHERE_HELP = (
     "load_table's 'where' must be an AND of simple conditions comparing a "
-    "column to a literal (=, !=, <, <=, >, >=, LIKE, IN, IS NULL), for "
-    "example \"status = 'paid' AND amount > 100\". OR, NOT, functions, "
-    "subqueries and parameters cannot be sent to the source."
+    "column to a literal: =, !=, <, <=, >, >=, IN, IS NULL on numbers and "
+    "dates; =, IN, LIKE and IS NULL on text. For example "
+    "\"status = 'paid' AND amount > 100\". OR, NOT, functions, subqueries and "
+    "parameters cannot be sent to the source."
 )
 
 #: How a tool error starts when the source behind it is down (REST: 503).
@@ -176,7 +176,7 @@ class ToolService:
         scanned = self._search_slice(table, filter_column, filter_value) or table
         operator = "LIKE" if "%" in filter_value else "="
         sql = (
-            f"SELECT * FROM {scanned} WHERE CAST({filter_column} AS VARCHAR) {operator} ? "
+            f"SELECT * FROM {scanned} WHERE CAST({_q(filter_column)} AS VARCHAR) {operator} ? "
             f"LIMIT {limit}"
         )
         return self._format_result(self._query.sql(sql, params=[filter_value]))
@@ -197,18 +197,31 @@ class ToolService:
         if self._planner.policy.allows_full_load(schema.known_estimate):
             # Small enough to take whole, which serves every later query too.
             return None
-        kinds = {c.name: c.type.lower() for c in schema.columns}
-        if not any(kinds.get(column, "").startswith(text) for text in ("varchar", "text", "char")):
+        kinds = {c.name: c.type for c in schema.columns}
+        if column_kind(kinds.get(column)) != "text":
             return None
         source = self._sources.source(ref.source)
         if source is None or not source.capabilities.slices:
             return None
-        spec = SliceSpec(predicates=(Predicate(column, "like" if "%" in value else "eq", value),))
-        covering = self._catalog.find_covering_slice(ref, spec)
+        asked = Predicate(column, "like" if "%" in value else "eq", value)
+        # The planner's rules and limits, as for any slice: a LIKE pattern the
+        # source would read differently is not sent, and the budget applies.
+        pushable = self._planner.pushable_predicates(ref, (asked,))
+        if not pushable:
+            return None
+        covering = self._catalog.find_covering_slice(ref, SliceSpec(predicates=pushable))
         if covering is not None:
             return covering.table_name
+        plan = self._planner.plan_slice(
+            ref, SliceSpec(predicates=pushable), self._sources.estimate_slice
+        )
+        if plan.is_refused:
+            logger.info("Search slice for %s refused (%s)", table, plan.refusal.splitlines()[0])
+            return None
         try:
-            return self._sources.ensure_slices([TargetPlan(ref, spec, "load_slice")]).get(ref)
+            for evicted in plan.evictions:
+                self._sources.evict_slice(evicted)
+            return self._sources.ensure_slices(plan.targets).get(ref)
         except QueryError as e:
             logger.info("Search slice for %s unavailable (%s); loading the table", table, e)
             return None
@@ -233,9 +246,10 @@ class ToolService:
         if pushed is not None:
             return pushed
 
+        # Quoted, so a column called ``order`` or ``group`` is a column.
         sql = (
-            f"SELECT {group_by}, {func}({agg_column}) AS {alias} FROM {table} "
-            f"GROUP BY {group_by} ORDER BY {alias} DESC LIMIT {MAX_RESULT_ROWS}"
+            f"SELECT {_q(group_by)}, {func}({_q(agg_column)}) AS {_q(alias)} FROM {table} "
+            f"GROUP BY {_q(group_by)} ORDER BY {_q(alias)} DESC LIMIT {MAX_RESULT_ROWS}"
         )
         return self._format_result(self._query.sql(sql))
 
@@ -287,6 +301,8 @@ class ToolService:
         plan = self._planner.plan_query(f"SELECT * FROM {table}")
         if plan.is_refused:
             return {"error": plan.refusal}
+        for evicted in plan.evictions:  # the budget a query's load answers to
+            self._sources.evict_slice(evicted)
         newly = self._sources.ensure_loaded([ref])
         if ref in newly:
             return {"status": "loaded", "table": table, "row_count": self._row_count(ref)}
@@ -310,28 +326,29 @@ class ToolService:
             return {"error": _WHERE_HELP}
         if where and not use.predicates:
             return {"error": _WHERE_HELP}
-        types = {c.name.lower(): c.type for c in self._catalog.get_table(ref).columns}
-        for predicate in use.predicates:
-            if not predicate_is_pushable(predicate, types.get(predicate.column.lower())):
-                return {
-                    "error": f"Cannot load a slice by '{predicate}': the value's type does "
-                    f"not match column '{predicate.column}', so the source would compare "
-                    "it differently. Quote text values and leave numbers bare."
-                }
-        spec = use.slice_spec()
-        # The budget a query's slice answers to: listing every column, or a
-        # filter that keeps most of the table, is not a way around it.
-        policy = self._planner.policy
-        estimate = self._sources.estimate_slice(ref, spec)
-        if not policy.allows_slice(estimate):
+        refused = self._planner.unpushable(ref, use.predicates)
+        pushable = self._planner.pushable_predicates(ref, use.predicates)
+        if refused:
+            left = refused[0]
             return {
-                "error": f"Refusing to load this slice of {table}: about {estimate:,} rows "
-                f"match, over slice_max_rows={policy.slice_max_rows:,}. Narrow 'where', "
-                "or raise FUSION_SLICE_MAX_ROWS."
+                "error": f"Cannot load a slice by '{left}': the source would not compare it "
+                f"the way DuckDB does on column '{left.column}' (a value of another type, "
+                "a text range or != that its collation decides, or a second condition "
+                "with the same column and operator). Quote text values, leave numbers "
+                "bare, and filter text with =, IN or LIKE (narrow by a number or date "
+                "column first if the table is too big to load whole)."
             }
-        target = TargetPlan(ref, spec, "load_slice")
+        spec = SliceSpec(columns=use.columns, predicates=pushable)
+        # The decisions a query's slice gets: reuse, the size limit and the
+        # budget. Listing every column, or a filter that keeps most of the
+        # table, is not a way around them.
+        plan = self._planner.plan_slice(ref, spec, self._sources.estimate_slice)
+        if plan.is_refused:
+            return {"error": plan.refusal}
+        for evicted in plan.evictions:
+            self._sources.evict_slice(evicted)
         try:
-            table_name = self._sources.ensure_slices([target])[ref]
+            table_name = self._sources.ensure_slices(plan.targets)[ref]
         except KeyError:
             return {"error": f"No connected source for '{table}'"}
         loaded = self._catalog.slices.get(table_name)
@@ -481,6 +498,11 @@ class ToolService:
             "execution_time_ms": round(elapsed_ms, 1),
             "from_cache": False,
         }
+
+
+def _q(identifier: str) -> str:
+    """A validated identifier, quoted for the store (DuckDB stays case-insensitive)."""
+    return '"' + identifier.replace('"', '""') + '"'
 
 
 def _unique_names(columns: Sequence[str]) -> list[str]:

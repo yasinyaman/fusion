@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Literal
 
 from fusion.domain.models import TableRef
@@ -168,9 +168,28 @@ _TEXT_TYPES = ("varchar", "text", "char", "string")
 _TEMPORAL_TYPES = ("date", "time")
 
 
+#: Floats a literal compares differently at the source: DuckDB casts ``0.1``
+#: to the column's FLOAT, Postgres and MySQL widen the column to double instead.
+#: (DuckDB's own ``float`` is single precision; Warp reports doubles as ``double``.)
+_APPROXIMATE_TYPES = frozenset({"real", "float", "float4"})
+#: Exact numerics: a quoted decimal is cast to the column's scale in DuckDB,
+#: so ``'1.005'`` matches 1.01 there and nothing at a source sent ``1.005``.
+_EXACT_DECIMAL_TYPES = frozenset({"decimal", "numeric"})
+
+
 def column_kind(column_type: str | None) -> str | None:
-    """``bool``, ``numeric``, ``text`` or ``temporal``; None when unknown."""
+    """``bool``, ``numeric``, ``text`` or ``temporal``; None when unknown.
+
+    Arrays, ranges, maps and structs are none of these: an ``=`` against one
+    is not a scalar comparison, so it is unknown and never pushed.
+    """
     kind = (column_type or "").lower()
+    if any(mark in kind for mark in ("[]", "array", "range", "map(", "struct", "union")):
+        return None
+    if kind == "list":
+        return None
+    if kind == "uuid":
+        return "uuid"
     words = kind.split("(")[0].split()
     if kind.startswith("bool"):
         return "bool"
@@ -183,27 +202,148 @@ def column_kind(column_type: str | None) -> str | None:
     return None
 
 
-def predicate_is_pushable(predicate: Predicate, column_type: str | None) -> bool:
-    """Whether a source would evaluate ``predicate`` the way the store does.
+_INTEGER_TYPES = frozenset("integer int int2 int4 int8 bigint smallint tinyint hugeint".split())
+_INTEGER_TEXT = re.compile(r"-?[0-9]+")
+_DECIMAL_TEXT = re.compile(r"-?([0-9]+\.[0-9]*|\.[0-9]+)")
+#: Text operators whose answer cannot lose a row at a source that collates
+#: differently: a case-insensitive ``=`` or ``LIKE`` only matches *more* rows,
+#: which the local WHERE then drops. ``!=`` and ranges can match fewer.
+_TEXT_OPS = frozenset({"eq", "in", "like"})
+
+
+def _as_column_kind(value: Any, kind: str, column_type: str) -> Any:
+    """``value`` as the column's own kind, the way DuckDB casts it; or the sentinel."""
+    if kind == "bool":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int) and value in (0, 1):
+            return bool(value)  # DuckDB reads 1 as true; the MySQL tinyint(1) idiom
+        return _NO_FORM
+    if isinstance(value, bool):
+        return _NO_FORM
+    if kind == "uuid":
+        return value if isinstance(value, str) and _UUID_TEXT.fullmatch(value) else _NO_FORM
+    if kind == "numeric":
+        base = column_type.lower().split("(")[0].split()[0]
+        if isinstance(value, float) and base in _INTEGER_TYPES:
+            # A source reading an integer filter refuses 6.5 outright; a whole
+            # number goes as the integer it is, and a fraction stays local.
+            return int(value) if value.is_integer() else _NO_FORM
+        if isinstance(value, int | float):
+            return value
+        if isinstance(value, str):
+            if _INTEGER_TEXT.fullmatch(value):
+                return int(value)  # DuckDB casts '042' to 42 for an integer column
+            if (
+                base not in _INTEGER_TYPES
+                and base not in _EXACT_DECIMAL_TYPES
+                and _DECIMAL_TEXT.fullmatch(value)
+                and len(value.lstrip("-").replace(".", "").lstrip("0")) <= 15
+            ):
+                return float(value)  # a double column, within a double's digits
+        return _NO_FORM
+    if kind == "temporal" and isinstance(value, str) and _ZONED.search(column_type.lower()):
+        # A zoned timestamp read from text depends on the reader's time zone,
+        # which is the source's session zone there and DuckDB's here. Only a
+        # literal that names its own offset means the same instant to both.
+        return value if _HAS_OFFSET.search(value) else _NO_FORM
+    if kind in ("text", "temporal"):
+        return value if isinstance(value, str) else _NO_FORM
+    return _NO_FORM
+
+
+_ZONED = re.compile(r"with time zone|timestamptz|tz\b")
+#: A time of day followed by its offset: ``10:00+03``, ``10:00:00Z``. A bare
+#: date's ``-15`` is not an offset.
+_HAS_OFFSET = re.compile(
+    r"[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?\s*(Z|[+-][0-9]{2}(:?[0-9]{2})?)$"
+)
+_UUID_TEXT = re.compile(r"[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}")
+
+
+_NO_FORM = object()
+
+
+def pushable_form(predicate: Predicate, column_type: str | None) -> Predicate | None:
+    """``predicate`` as a source would evaluate it the way the store does, or None.
 
     The original WHERE still runs locally, but only over the rows the source
-    sent. ``zip = 123`` on a text column matches ``'0123'`` in DuckDB (it
-    casts) and not at a source that compares text — so a literal is pushed
-    only against a column of its own kind. Unknown type: not pushed.
+    sent, so a pushed condition may let through more rows than the query keeps
+    and never fewer. ``zip = 123`` on a text column matches ``'0123'`` in
+    DuckDB (it casts) and not at a source that compares text, so a literal is
+    pushed only in its column's own kind: ``id = '42'`` goes as ``id = 42``,
+    as DuckDB reads it. On text only ``=``, ``IN`` and ``LIKE`` go (the source's
+    collation decides ``!=`` and ranges), and no LIKE pattern with a backslash
+    (an escape there, a plain character in DuckDB). Unknown type: not pushed.
     """
     if predicate.op == "is_null":
-        return True
+        return predicate
     kind = column_kind(column_type)
-    values = predicate.value if predicate.op == "in" else (predicate.value,)
-    if kind == "bool":
-        return predicate.op in ("eq", "ne", "in") and all(isinstance(v, bool) for v in values)
-    if any(isinstance(v, bool) for v in values):
-        return False
-    if kind == "numeric":
-        return predicate.op != "like" and all(isinstance(v, int | float) for v in values)
-    if kind in ("text", "temporal"):
-        return all(isinstance(v, str) for v in values)
-    return False
+    if kind is None or column_type is None:
+        return None
+    if kind == "bool" and predicate.op not in ("eq", "ne", "in"):
+        return None
+    if kind == "numeric" and predicate.op == "like":
+        return None
+    base = column_type.lower().split("(")[0].split()
+    if kind == "numeric" and base and base[0] in _APPROXIMATE_TYPES:
+        return None
+    if kind == "uuid" and predicate.op not in ("eq", "in"):
+        # The source compares uuids case-insensitively, the store as text:
+        # = and IN can only match more rows there, != and LIKE fewer.
+        return None
+    if kind == "text":
+        if predicate.op not in _TEXT_OPS:
+            return None
+        if predicate.op == "like" and "\\" in str(predicate.value):
+            return None
+    if predicate.op == "in":
+        values = tuple(_as_column_kind(v, kind, column_type) for v in predicate.value)
+        if any(v is _NO_FORM for v in values):
+            return None
+        return replace(predicate, value=values)
+    value = _as_column_kind(predicate.value, kind, column_type)
+    return None if value is _NO_FORM else replace(predicate, value=value)
+
+
+def merge_same_key(predicates: Sequence[Predicate]) -> tuple[tuple[Predicate, ...], bool]:
+    """One condition per column and operator, and whether nothing was lost.
+
+    A source's filters may hold one value per column and operator (Warp's URL
+    ones do). Two ``IN`` lists become their intersection; two lower (or upper)
+    bounds of one kind keep the tighter one; equal duplicates become one. Any
+    other pair keeps its first condition only: the source then sends a
+    superset, which the local WHERE narrows, and the second ``bool`` is False
+    so the caller knows the source no longer applies everything exactly.
+    """
+    merged: dict[tuple[str, str], Predicate] = {}
+    exact = True
+    for p in predicates:
+        key = (p.column.lower(), p.op)
+        held = merged.get(key)
+        if held is None:
+            merged[key] = p
+        elif held == p:
+            continue
+        elif p.op == "in":
+            wanted = set(p.value)
+            both = tuple(v for v in held.value if v in wanted)
+            if both:
+                merged[key] = replace(held, value=both)
+            else:
+                exact = False  # no row can match; the local WHERE says so
+        elif p.op in (*_LOWER_BOUNDS, *_UPPER_BOUNDS) and _orderable(held.value, p.value):
+            lower = p.op in _LOWER_BOUNDS
+            tighter = _compare("gt" if lower else "lt", p.value, held.value)
+            merged[key] = p if tighter else held
+        else:
+            exact = False
+    return tuple(merged.values()), exact
+
+
+def predicate_is_pushable(predicate: Predicate, column_type: str | None) -> bool:
+    """Whether ``predicate`` can be sent to the source at all (see ``pushable_form``)."""
+    return pushable_form(predicate, column_type) is not None
 
 
 def keys_are_pushable(driver_type: str | None, target_type: str | None) -> bool:
@@ -298,7 +438,22 @@ class SliceSpec:
         return ref.full_name if not suffix else f"{ref.full_name}__s_{suffix}"
 
     def with_predicate(self, predicate: Predicate) -> SliceSpec:
-        """Copy with one more condition (used by semi-joins)."""
+        """Copy with one more condition (used by semi-joins).
+
+        An ``IN`` on a column that already has one becomes their intersection:
+        the same rows, said in one condition a source can take.
+        """
+        if predicate.op == "in":
+            for index, existing in enumerate(self.predicates):
+                if existing.op == "in" and existing.column == predicate.column:
+                    wanted = set(predicate.value)
+                    both = tuple(v for v in existing.value if v in wanted)
+                    merged = (*self.predicates[:index], Predicate(predicate.column, "in", both))
+                    return SliceSpec(
+                        columns=self.columns,
+                        predicates=(*merged, *self.predicates[index + 1 :]),
+                        limit=self.limit,
+                    )
         return SliceSpec(
             columns=self.columns, predicates=(*self.predicates, predicate), limit=self.limit
         )
@@ -402,12 +557,16 @@ class SliceRegistry:
                 return loaded
         return None
 
-    def find_covering(self, ref: TableRef, spec: SliceSpec, now: float = 0.0) -> LoadedSlice | None:
+    def find_covering(
+        self, ref: TableRef, spec: SliceSpec, now: float | None = None
+    ) -> LoadedSlice | None:
         """The cheapest loaded slice that covers ``spec``, or None.
 
         A complete full-table slice wins (it answers anything); otherwise the
         smallest covering slice is chosen so later queries scan as little as
-        possible. The winner's ``last_used`` is refreshed for LRU eviction.
+        possible. The winner's ``last_used`` is refreshed for LRU eviction
+        when ``now`` is given; a lookup without it leaves the clock alone
+        (resetting it to 0 would make the slice the first one evicted).
         """
         candidates = [
             s
@@ -417,7 +576,8 @@ class SliceRegistry:
         if not candidates:
             return None
         best = min(candidates, key=lambda s: (not s.is_full, s.row_count))
-        best.last_used = now
+        if now is not None:
+            best.last_used = now
         return best
 
     def touch(self, table_name: str, now: float) -> None:

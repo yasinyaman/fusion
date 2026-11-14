@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from fusion.domain.errors import SchemaError
+from fusion.domain.errors import QueryError, SchemaError
 from fusion.domain.measures import (
     ROW_MEASURE,
     Dimension,
@@ -74,7 +74,7 @@ class Settings:
     warp_url: str = "http://localhost:8000"
     # Sent on every Warp request in ``warp_api_key_header`` (Warp's
     # ``auth.header_name``, ``X-API-Key`` by default). Empty = no auth.
-    warp_api_key: str = ""
+    warp_api_key: str = field(default="", repr=False)  # a secret: never in repr or logs
     warp_api_key_header: str = "X-API-Key"
     warp_timeout: float = 30.0
     warp_max_retries: int = 3
@@ -118,7 +118,12 @@ class Settings:
     cache_max_entries: int = 500
 
     # Security
-    api_key: str = ""
+    api_key: str = field(default="", repr=False)  # a secret: never in repr or logs
+    #: The store's time zone for reading text as timestamps; set it to the
+    #: sources' session time zone (Postgres in a container: UTC).
+    timezone: str = "UTC"
+    #: Largest REST request body accepted (0 = no limit).
+    max_request_bytes: int = 1_048_576
     cors_origins: tuple[str, ...] = ("http://localhost:3000",)
     rate_limit: str = "100/minute"
     # "" = auto (on outside production, off in production).
@@ -177,6 +182,8 @@ class Settings:
             query_timeout=float(get("FUSION_QUERY_TIMEOUT", "300")),
             cache_max_entries=int(get("FUSION_CACHE_MAX_ENTRIES", "500")),
             api_key=get("FUSION_API_KEY", ""),
+            max_request_bytes=int(get("FUSION_MAX_REQUEST_BYTES", "1048576")),
+            timezone=get("FUSION_TIMEZONE", "UTC").strip() or "UTC",
             cors_origins=_csv(get("FUSION_CORS_ORIGINS", "http://localhost:3000")),
             rate_limit=get("FUSION_RATE_LIMIT", "100/minute"),
             debug_endpoints=get("FUSION_DEBUG_ENDPOINTS", ""),
@@ -266,7 +273,8 @@ class Settings:
         for name, raw in parsed.items():
             try:
                 models[str(name)] = semantic_model_from(str(name), raw)
-            except (SchemaError, TypeError, ValueError) as e:
+            except (SchemaError, QueryError, TypeError, ValueError) as e:
+                # QueryError too: an unknown aggregation must not stop startup.
                 logger.error("Ignoring semantic model for '%s': %s", name, e)
         return models
 
@@ -291,11 +299,16 @@ class Settings:
             for name, minimum in _AT_LEAST
             # ``not >=`` rather than ``<`` so that NaN fails too.
             if not getattr(self, name) >= minimum
+            # The backup schedule matters only when backups run.
+            and (self.backup_enabled or not name.startswith("backup_"))
         ]
         if self.port > 65535:
             errors.append(f"port={self.port} is not a TCP port.")
         if not (0 < self.warp_timeout < float("inf")):
             errors.append(f"warp_timeout={self.warp_timeout!r} must be a positive number.")
+        zones = _known_time_zones()
+        if zones and self.timezone not in zones:
+            errors.append(f"FUSION_TIMEZONE='{self.timezone}' is not a known time zone name.")
         if not self.circuit_breaker_timeout > 0:
             # The breaker refuses 0 itself, but only once a source connects.
             errors.append(
@@ -346,12 +359,23 @@ class Settings:
         return errors
 
 
+def _known_time_zones() -> set[str]:
+    """IANA zone names, or empty when this system has no zone database to ask."""
+    try:
+        from zoneinfo import available_timezones
+
+        return available_timezones() | {"UTC"}
+    except Exception:  # pragma: no cover - no tzdata
+        return set()
+
+
 _AT_LEAST: tuple[tuple[str, float], ...] = (
     ("port", 1),
     ("threads", 1),
     ("cache_max_entries", 1),
     ("cache_ttl", 0),
     ("query_timeout", 0),
+    ("max_request_bytes", 0),
     ("in_chunk_size", 1),
     ("pool_size", 1),
     ("pool_max_overflow", 0),

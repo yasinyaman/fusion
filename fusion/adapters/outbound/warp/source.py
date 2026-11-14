@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -15,6 +16,7 @@ from fusion.adapters.outbound.warp.http import (
     HttpTransport,
     HttpTransportError,
     WarpHttpClient,
+    _in_needs_body,
     build_transport,
     is_transport_failure,
 )
@@ -32,7 +34,7 @@ from fusion.domain.models import (
     SourceSchema,
     TableSchema,
 )
-from fusion.domain.slices import SliceSpec
+from fusion.domain.slices import Predicate, SliceSpec
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +84,8 @@ class WarpSource:
         self._page_size = page_size
         self._export_batch_size = export_batch_size
         self._tables: list[str] = []
+        #: Primary key per table, from ``/schema``: the order paged reads take.
+        self._primary_keys: dict[str, list[str]] = {}
         self._connected = False
         self._caps = WarpCapabilities()
         self._raw_query_denied = False
@@ -170,6 +174,7 @@ class WarpSource:
         offset: int = 0,
         fields: Sequence[str] | None = None,
         filters: Sequence[Any] = (),
+        sort: str | None = None,
     ) -> Any:
         """One page of ``table``, retrying once with the pre-0.10 URL layout.
 
@@ -179,7 +184,7 @@ class WarpSource:
         """
         try:
             return self._client.table_page(
-                table, limit=limit, offset=offset, fields=fields, filters=filters
+                table, limit=limit, offset=offset, fields=fields, filters=filters, sort=sort
             )
         except HttpTransportError as e:
             if e.status != 404 or self._layout_fallback_tried or not self._caps.legacy:
@@ -190,7 +195,7 @@ class WarpSource:
         self._client.configure(db_prefixed=False)
         try:
             page = self._client.table_page(
-                table, limit=limit, offset=offset, fields=fields, filters=filters
+                table, limit=limit, offset=offset, fields=fields, filters=filters, sort=sort
             )
         except ConnectionError:
             # Not a layout problem (the table is simply unknown): put it back.
@@ -233,11 +238,14 @@ class WarpSource:
             if not isinstance(table, dict):
                 continue
             estimate = table.get("row_estimate")
+            key = table.get("primary_key")
+            if isinstance(key, list) and key and all(isinstance(k, str) for k in key):
+                self._primary_keys[str(name)] = list(key)
             schema[str(name)] = TableSchema(
                 columns=[
                     ColumnInfo(
                         name=str(column.get("name", "")),
-                        type=_KIND_TYPES.get(str(column.get("kind", "")), "varchar"),
+                        type=_column_type(column),
                         nullable=bool(column.get("nullable", True)),
                     )
                     for column in table.get("columns", [])
@@ -304,7 +312,34 @@ class WarpSource:
             stream = self._export_slice(table, spec, max_rows)
             if stream is not None:
                 return stream
-        return PagedRowStream(self._table_page, table, spec, self._page_size, max_rows)
+        return PagedRowStream(
+            self._read_page, table, spec, self._page_size, max_rows, sort=self._page_order(table)
+        )
+
+    def _read_page(self, table: str, **kwargs: Any) -> Any:
+        """A page of a slice read; an answer Warp gave on purpose is the request's fault.
+
+        HttpTransportError is a ConnectionError, so a 400 for a bad filter
+        value would otherwise reach the caller as "source unavailable".
+        """
+        try:
+            return self._table_page(table, **kwargs)
+        except HttpTransportError as e:
+            if is_transport_failure(e):
+                raise
+            raise QueryError(f"Warp refused a page of {table}: {e}") from e
+
+    def _page_order(self, table: str) -> str | None:
+        """``sort=`` for paged reads: OFFSET over an unordered scan can skip or repeat rows.
+
+        The primary key when ``/schema`` gave one; without it pages stay
+        unordered, which a database usually, but not always, keeps stable.
+        """
+        key = self._primary_keys.get(table)
+        if not key:
+            logger.debug("No primary key for %s; paged reads are unordered", table)
+            return None
+        return ",".join(f"{column}:asc" for column in key)
 
     def _export_slice(self, table: str, spec: SliceSpec, max_rows: int | None) -> RowStream | None:
         """The streaming export, or None when this Warp turns out not to serve it."""
@@ -363,8 +398,18 @@ class WarpSource:
         self._require_connected()
         if any(p.op == "in" and len(p.value) > MAX_GET_IN_VALUES for p in spec.predicates):
             return None  # the key list would not fit in the URL
+        # The count comes from a URL, which cannot carry every condition (an IN
+        # value with a comma, two filters with one key). Counting without those
+        # gives an upper bound: enough to hold a slice to its size limit, where
+        # "unknown" would let any size through.
+        usable: list[Predicate] = []
+        keys: set[tuple[str, str]] = set()
+        for p in spec.predicates:
+            if not _in_needs_body(p) and (p.column, p.op) not in keys:
+                keys.add((p.column, p.op))
+                usable.append(p)
         try:
-            page = self._table_page(table, limit=1, filters=spec.predicates)
+            page = self._table_page(table, limit=1, filters=usable)
         except ConnectionError as e:
             logger.debug("Row estimate for %s unavailable: %s", table, e)
             return None
@@ -392,9 +437,9 @@ class WarpSource:
                     self._client.base_url,
                     self.name,
                 )
-            raise QueryError(f"Warp query execution failed: {e}") from e
+            raise _read_error(f"Warp query execution failed: {e}", e) from e
         except ConnectionError as e:
-            raise QueryError(f"Warp query execution failed: {e}") from e
+            raise _read_error(f"Warp query execution failed: {e}", e) from e
         return RowSet.from_records(extract_rows(data))
 
     def fetch_filtered(
@@ -499,6 +544,37 @@ def extract_row_count(data: Any) -> int:
     return -1
 
 
+def _column_type(column: Mapping[str, Any]) -> str:
+    """The catalog type of a ``/schema`` column: its kind, sharpened by its real type.
+
+    The kind alone is too coarse to decide what may be pushed to the source:
+    ``numeric(10,2)`` and ``real`` are both kind ``float``, and a zoned and a
+    plain timestamp are both ``datetime``, yet each compares a literal
+    differently. ``type``/``udt_name``/``precision``/``scale`` say which.
+    """
+    kind = str(column.get("kind", ""))
+    declared = str(column.get("type") or "").lower()
+    udt = str(column.get("udt_name") or "").lower()
+    if kind == "float":
+        if "numeric" in declared or "decimal" in declared or udt == "numeric":
+            precision, scale = column.get("precision"), column.get("scale")
+            if isinstance(precision, int) and isinstance(scale, int):
+                return f"decimal({precision},{scale})"
+            return "decimal"
+        if declared in ("real", "float4") or udt == "float4":
+            return "real"
+        return "double"
+    if kind == "datetime":
+        # MySQL's TIMESTAMP is converted through the session time zone too.
+        zoned = "with time zone" in declared or udt == "timestamptz" or declared == "timestamp"
+        return "timestamp with time zone" if zoned else "timestamp"
+    if kind == "uuid":
+        return "uuid"
+    if kind == "list":
+        return "list"  # an array: never compared as a scalar
+    return _KIND_TYPES.get(kind, "varchar")
+
+
 def _read_error(message: str, cause: BaseException) -> QueryError | ConnectionError:
     """A read that failed because Warp is down stays a ConnectionError.
 
@@ -506,6 +582,15 @@ def _read_error(message: str, cause: BaseException) -> QueryError | ConnectionEr
     answered on purpose (4xx) is the request's fault and a QueryError.
     """
     return ConnectionError(message) if is_transport_failure(cause) else QueryError(message)
+
+
+#: JSON carries dates and timestamps as strings; a sample of nothing but
+#: ISO-shaped ones is a date or timestamp column, not text (which would keep
+#: every range on it from being sent to the source).
+_ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_ISO_TIMESTAMP = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?"
+)
 
 
 def infer_column_type(values: Sequence[Any]) -> str:
@@ -520,6 +605,10 @@ def infer_column_type(values: Sequence[Any]) -> str:
             kinds.add("integer")
         elif isinstance(value, float):
             kinds.add("double")
+        elif isinstance(value, str) and _ISO_DATE.fullmatch(value):
+            kinds.add("date")
+        elif isinstance(value, str) and _ISO_TIMESTAMP.fullmatch(value):
+            kinds.add("timestamp")
         else:
             kinds.add("varchar")
     if not kinds:
@@ -530,6 +619,10 @@ def infer_column_type(values: Sequence[Any]) -> str:
         return "double"
     if kinds == {"boolean"}:
         return "boolean"
+    if kinds == {"date"}:
+        return "date"
+    if kinds <= {"date", "timestamp"}:
+        return "timestamp"
     return "varchar"
 
 

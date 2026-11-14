@@ -47,3 +47,11 @@ class SqlAnalyzer(Protocol):
         still resolves.
         """
         ...
+
+    def with_row_cap(self, sql: str, rows: int) -> str:
+        """``sql`` reading at most ``rows`` rows, as text the source still reads.
+
+        Only a query with no LIMIT, OFFSET or FETCH of its own gains one; any
+        other comes back unchanged, and the caller cuts the result instead.
+        """
+        ...

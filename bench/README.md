@@ -167,10 +167,12 @@ a wrong one, so below some capacity this design is worse than no model at all.
   per-item McNemar in the result files treats them as 40 independent pairs and
   so overstates the evidence. The p-values quoted above count each question
   once (`stats.sign_test_by_cluster`; `tests/test_readme_claims.py` recomputes
-  them from the checked-in results). On that count only `lexicon+repair`
-  against `semantic` and against `semantic-schema` at 7b fall below 0.05
-  (p = 0.008 each), and with five comparisons on two question sets and two
-  models not even those survive a correction for multiple comparisons.
+  them from the checked-in results). On that count three comparisons fall
+  below 0.05, all at 7b: `lexicon+repair` against `semantic` and against
+  `semantic-schema` (8 against 0, p = 0.008 each), and against `raw` on the
+  single-table questions (9 against 1, p = 0.02; on all 40 it is 9 against 3,
+  p = 0.15). With five arms, two question sets and two models compared, only
+  the first two would survive a correction for multiple comparisons.
   `lexicon+repair` against `lexicon` is suggestive in both directions and
   significant in neither; against `catalog` it is a tie.
 - **Grading favours answers shaped like the DSL's.** A result must match the

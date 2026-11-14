@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import replace
@@ -27,7 +28,7 @@ from fusion.observability.logging import setup_logging
 logger = logging.getLogger(__name__)
 
 
-def build_parser(settings: Settings) -> argparse.ArgumentParser:
+def build_parser(settings: Settings, log_level: str = "WARNING") -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="fusion-mcp",
         description="Fusion MCP Server — DuckDB analytics tools for LLMs",
@@ -46,9 +47,10 @@ def build_parser(settings: Settings) -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--log-level",
-        default="WARNING",
+        default=log_level,
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Log level (default: WARNING); logs go to stderr",
+        help=f"Log level (default: FUSION_LOG_LEVEL, else WARNING; now {log_level}); "
+        "logs go to stderr",
     )
     parser.add_argument("--version", action="version", version=f"fusion {__version__}")
     return parser
@@ -56,7 +58,12 @@ def build_parser(settings: Settings) -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = None) -> int:
     base = Settings.from_env(environ)
-    args = build_parser(base).parse_args(argv)
+    # FUSION_LOG_LEVEL when it is set; WARNING otherwise, to keep stderr quiet.
+    env_level = (os.environ if environ is None else environ).get("FUSION_LOG_LEVEL", "")
+    level = env_level.strip().upper()
+    args = build_parser(
+        base, level if level in ("DEBUG", "INFO", "WARNING", "ERROR") else "WARNING"
+    ).parse_args(argv)
     settings = replace(
         base,
         memory_limit=args.memory_limit,

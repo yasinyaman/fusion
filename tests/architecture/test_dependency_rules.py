@@ -70,7 +70,9 @@ def _imports(path: Path) -> list[str]:
 
 
 def _matches(name: str, prefixes: tuple[str, ...]) -> bool:
-    return any(name == p or name.startswith(p + ".") for p in prefixes)
+    # The bare package ("fusion", for the version string) allows only itself:
+    # as a prefix it would allow every fusion.* import and check nothing.
+    return any(name == p or (p != "fusion" and name.startswith(p + ".")) for p in prefixes)
 
 
 def _layer_files(layer: str) -> list[Path]:

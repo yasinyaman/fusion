@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
@@ -18,6 +19,14 @@ from fusion.domain.models import (
 from fusion.domain.slices import SliceSpec
 from tests.fakes.warp_transport import run_mock_sql
 
+#: JSON carries dates and timestamps as strings; a sample of nothing but
+#: ISO-shaped ones is a date or timestamp column, not text (which would keep
+#: every range on it from being sent to the source).
+_ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_ISO_TIMESTAMP = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}[ T][0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?"
+)
+
 
 def _infer_type(values: list[Any]) -> str:
     kinds = set()
@@ -30,6 +39,10 @@ def _infer_type(values: list[Any]) -> str:
             kinds.add("integer")
         elif isinstance(v, float):
             kinds.add("double")
+        elif isinstance(v, str) and _ISO_DATE.fullmatch(v):
+            kinds.add("date")
+        elif isinstance(v, str) and _ISO_TIMESTAMP.fullmatch(v):
+            kinds.add("timestamp")
         else:
             kinds.add("varchar")
     if not kinds:
@@ -40,6 +53,10 @@ def _infer_type(values: list[Any]) -> str:
         return "double"
     if kinds == {"boolean"}:
         return "boolean"
+    if kinds == {"date"}:
+        return "date"
+    if kinds <= {"date", "timestamp"}:
+        return "timestamp"
     return "varchar"
 
 

@@ -123,7 +123,7 @@ class SchemaCatalog:
         return self._slices.record(loaded)
 
     def find_covering_slice(
-        self, ref: TableRef | str, spec: SliceSpec, now: float = 0.0
+        self, ref: TableRef | str, spec: SliceSpec, now: float | None = None
     ) -> LoadedSlice | None:
         return self._slices.find_covering(coerce_ref(ref), spec, now)
 

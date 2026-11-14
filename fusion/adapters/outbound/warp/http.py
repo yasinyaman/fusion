@@ -33,6 +33,12 @@ RAW_QUERY_PATH = "/query/execute"
 # Cloud metadata hostnames that must never be contacted (SSRF targets).
 _BLOCKED_HOSTNAMES = frozenset({"metadata.google.internal", "metadata.goog"})
 
+#: Cloud metadata endpoints outside the link-local ranges: AWS's IPv6 IMDS
+#: (fd00:ec2::254, a unique-local address) and Alibaba Cloud's (100.100.100.200).
+_METADATA_ADDRESSES = frozenset(
+    {ipaddress.ip_address("fd00:ec2::254"), ipaddress.ip_address("100.100.100.200")}
+)
+
 
 class HttpTransportError(ConnectionError):
     """An HTTP request to Warp failed (network error or non-2xx status)."""
@@ -47,17 +53,17 @@ def is_transport_failure(exc: BaseException) -> bool:
     """Whether an exception should count against the circuit breaker.
 
     A 4xx answer proves Warp is up and talking (a bad table name, a refused
-    raw query, ...); only network errors, 5xx, 408 (timeout) and 429
-    (overload) indicate the service itself is struggling.
+    raw query, ...). So does a 500: Warp answers it on every route when the
+    *database* rejects the statement (a bad cast, a statement timeout), and
+    counting those would let five bad requests cut the source off for
+    everyone. Network errors, 502/503/504, 408 (timeout) and 429 (overload)
+    are what say the service itself is struggling.
     """
     if isinstance(exc, HttpTransportError) and exc.status is not None:
         status = exc.status
-        if status == 500 and exc.url.endswith(RAW_QUERY_PATH):
-            # Warp answers 500 when the *database* rejects the SQL it was
-            # handed. That is the query's failure, and counting it would let
-            # five bad queries cut the source off for everyone.
-            return False
-        return not (400 <= status < 500 and status not in (408, 429))
+        if status in (408, 429) or status >= 502:
+            return True
+        return False
     return True
 
 
@@ -68,9 +74,12 @@ def _is_blocked_ip(host: str) -> bool:
     on localhost or a private Docker network.
     """
     try:
-        return ipaddress.ip_address(host).is_link_local
+        address = ipaddress.ip_address(host.split("%")[0])  # drop an IPv6 zone id
     except ValueError:
         return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped  # ::ffff:169.254.169.254 is the IPv4 address
+    return address.is_link_local or address in _METADATA_ADDRESSES
 
 
 def validate_base_url(url: str) -> None:
@@ -86,12 +95,14 @@ def validate_base_url(url: str) -> None:
     if host.lower() in _BLOCKED_HOSTNAMES or _is_blocked_ip(host):
         raise ConnectionError(f"Blocked Warp host '{host}' (cloud metadata / link-local address).")
     try:
-        resolved = socket.gethostbyname(host)
+        # Every address the name has, IPv6 included, not only the first IPv4.
+        resolved = {info[4][0] for info in socket.getaddrinfo(host, None)}
     except OSError:
-        resolved = None
-    if resolved and _is_blocked_ip(resolved):
+        resolved = set()  # unresolvable now: the connection itself will fail
+    blocked = sorted(str(a) for a in resolved if _is_blocked_ip(str(a)))
+    if blocked:
         raise ConnectionError(
-            f"Blocked Warp host '{host}' (resolves to link-local address {resolved})."
+            f"Blocked Warp host '{host}' (resolves to metadata/link-local address {blocked[0]})."
         )
 
 
@@ -154,7 +165,8 @@ class PooledHttpTransport:
         return self._guarded(self._pool.get, url, params=dict(params or {}), timeout=timeout)
 
     def post_json(self, url: str, payload: Mapping[str, Any], timeout: float | None = None) -> Any:
-        return self._guarded(self._pool.post, url, json=dict(payload), timeout=timeout)
+        # Sent once: a raw query is not safe to repeat (see ConnectionPool).
+        return self._guarded(self._pool.post, url, json=dict(payload), timeout=timeout, once=True)
 
     def get_stream(
         self, url: str, params: Mapping[str, Any] | None = None, timeout: float | None = None

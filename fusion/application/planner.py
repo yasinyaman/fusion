@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import replace
 
 from fusion.domain.catalog import SchemaCatalog
 from fusion.domain.models import FetchPlan, TableRef
@@ -22,9 +23,17 @@ from fusion.domain.policy import (
     TargetPlan,
     budget_message,
     refusal_message,
+    view_refusal_message,
 )
 from fusion.domain.query_shape import QueryShape
-from fusion.domain.slices import Predicate, SliceSpec, keys_are_pushable, predicate_is_pushable
+from fusion.domain.slices import (
+    Predicate,
+    SliceSpec,
+    column_kind,
+    keys_are_pushable,
+    merge_same_key,
+    pushable_form,
+)
 from fusion.ports.sql_policy import SqlAnalyzer
 
 logger = logging.getLogger(__name__)
@@ -199,34 +208,146 @@ class FetchPlanner:
         use = shape.use_for(ref)
         if use is None:
             return SliceSpec.FULL
+        pushable, applied_all = self._pushable(ref, use.predicates)
         types = self._column_types(ref)
-        pushable: list[Predicate] = []
-        seen: set[tuple[str, str]] = set()
-        for p in use.predicates:
-            key = (p.column.lower(), p.op)
-            # A source's filters may hold one value per column and operator
-            # (Warp's URL ones do); a second such condition stays local.
-            if key not in seen and predicate_is_pushable(p, types.get(p.column.lower())):
-                seen.add(key)
-                pushable.append(p)
-        if len(pushable) != len(use.predicates):
-            # The source no longer applies every condition, so it must not
-            # apply the LIMIT either.
-            return SliceSpec(columns=use.columns, predicates=tuple(pushable))
-        limit = shape.limit if shape.limit_is_pushable else None
-        return use.slice_spec(limit=limit)
+        # A source applies every condition exactly only when none was left
+        # behind and none is on text, where its collation may let more rows
+        # through; only then may it apply the LIMIT too.
+        exact = applied_all and all(
+            p.op == "is_null" or column_kind(types.get(p.column.lower())) != "text"
+            for p in pushable
+        )
+        limit = shape.limit if exact and shape.limit_is_pushable else None
+        # DuckDB matches ``Name`` to a column ``name``; a source may not, so the
+        # slice names columns as the catalog spells them.
+        spelled = self._catalog_spelling(ref)
+        columns = (
+            None
+            if use.columns is None
+            else frozenset(spelled.get(c.lower(), c) for c in use.columns)
+        )
+        return SliceSpec(columns=columns, predicates=pushable, limit=limit)
+
+    def _catalog_spelling(self, ref: TableRef) -> dict[str, str]:
+        if not self._catalog.has_table(ref):
+            return {}
+        return {c.name.lower(): c.name for c in self._catalog.get_table(ref).columns}
+
+    def plan_slice(
+        self, ref: TableRef, spec: SliceSpec, estimator: SliceEstimator | None
+    ) -> QueryPlan:
+        """Plan loading exactly ``spec`` of ``ref`` (``load_table`` with a filter).
+
+        The same decisions a query's slice gets: the size limit and the budget
+        apply, and the refusal says what to do. A slice of a table that may be
+        loaded whole is never refused for size: it is smaller than what is
+        allowed. The same slice already loaded is reused; a wider one is not,
+        since the caller asked for this slice and its row count.
+        """
+        covering = self._catalog.find_covering_slice(ref, spec, self._clock())
+        if covering is not None and covering.spec.normalized() == spec.normalized():
+            target = TargetPlan(ref, spec, "reuse", covering=covering)
+            return QueryPlan(fetch=FetchPlan(targets=[ref]), shape=QueryShape(), targets=(target,))
+        estimate = self._table_estimate(ref)
+        slice_estimate = estimator(ref, spec) if estimator is not None else None
+        if not (
+            self._policy.allows_slice(slice_estimate) or self._policy.allows_full_load(estimate)
+        ):
+            reason = refusal_message(
+                ref,
+                estimate,
+                self._policy,
+                hints=[
+                    f"the filter still matches about {slice_estimate:,} rows "
+                    f"(slice_max_rows={self._policy.slice_max_rows:,}); narrow it further"
+                ],
+            )
+            target = TargetPlan(ref, spec, "refuse", estimate=estimate, reason=reason)
+            return QueryPlan(
+                fetch=FetchPlan(targets=[ref]),
+                shape=QueryShape(),
+                targets=(target,),
+                refusal=reason,
+            )
+        target = TargetPlan(
+            ref, spec, "load_slice", estimate=estimate, slice_estimate=slice_estimate
+        )
+        evictions, refusal = self._fit_budget([target])
+        return QueryPlan(
+            fetch=FetchPlan(targets=[ref]),
+            shape=QueryShape(),
+            targets=(target,),
+            evictions=evictions,
+            refusal=refusal,
+        )
+
+    def pushable_predicates(
+        self, ref: TableRef, predicates: Sequence[Predicate]
+    ) -> tuple[Predicate, ...]:
+        """The conditions a source can apply, each in its column's own kind."""
+        return self._pushable(ref, predicates)[0]
+
+    def unpushable(self, ref: TableRef, predicates: Sequence[Predicate]) -> list[Predicate]:
+        """The conditions no source could be sent, in the order asked."""
+        types = self._column_types(ref)
+        return [p for p in predicates if pushable_form(p, types.get(p.column.lower())) is None]
+
+    def _pushable(
+        self, ref: TableRef, predicates: Sequence[Predicate]
+    ) -> tuple[tuple[Predicate, ...], bool]:
+        """Pushable conditions, merged to one per column and operator, and exactness.
+
+        Exact means the source applies every condition as DuckDB would: none
+        was left out and no merge had to give one up.
+        """
+        types = self._column_types(ref)
+        spelled = self._catalog_spelling(ref)
+        forms: list[Predicate] = []
+        for p in predicates:
+            form = pushable_form(p, types.get(p.column.lower()))
+            if form is not None:
+                forms.append(replace(form, column=spelled.get(p.column.lower(), p.column)))
+        merged, exact = merge_same_key(forms)
+        return merged, exact and len(forms) == len(predicates)
 
     def _column_types(self, ref: TableRef) -> dict[str, str]:
         if not self._catalog.has_table(ref):
             return {}
         return {c.name.lower(): c.type for c in self._catalog.get_table(ref).columns}
 
+    def plan_full_loads(self, refs: Sequence[TableRef]) -> QueryPlan:
+        """Plan loading ``refs`` whole (a materialized view reads whole tables).
+
+        The size limit (with the refusal that says what works for a view) and
+        the row budget apply, as they do to a query's loads.
+        """
+        targets: list[TargetPlan] = []
+        for ref in refs:
+            if self._catalog.is_loaded(ref):
+                continue
+            refusal = self.full_load_refusal(ref)
+            if refusal:
+                return QueryPlan(
+                    fetch=FetchPlan(targets=list(refs)), shape=QueryShape(), refusal=refusal
+                )
+            targets.append(
+                TargetPlan(ref, SliceSpec.FULL, "load_full", estimate=self._table_estimate(ref))
+            )
+        evictions, refusal = self._fit_budget(targets) if targets else ((), "")
+        return QueryPlan(
+            fetch=FetchPlan(targets=list(refs)),
+            shape=QueryShape(),
+            targets=tuple(targets),
+            evictions=evictions,
+            refusal=refusal,
+        )
+
     def full_load_refusal(self, ref: TableRef) -> str:
         """Why ``ref`` may not be loaded whole, or ``""`` when it may."""
         estimate = self._table_estimate(ref)
         if self._policy.allows_full_load(estimate):
             return ""
-        return refusal_message(ref, estimate, self._policy)
+        return view_refusal_message(ref, estimate, self._policy)
 
     def _table_estimate(self, ref: TableRef) -> int | None:
         """Source-side size of a table, as far as the catalog knows it."""
