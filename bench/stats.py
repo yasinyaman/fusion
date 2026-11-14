@@ -19,7 +19,7 @@ scientific stack to report its own numbers is harder to run than it should be.
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 
@@ -132,6 +132,40 @@ def mcnemar_exact(first: Sequence[bool], second: Sequence[bool]) -> McNemarResul
         only_second=only_second,
         both=both,
         neither=neither,
+        p_value=_two_sided_binomial(min(only_first, only_second), only_first + only_second),
+    )
+
+
+def sign_test_by_cluster(
+    first: Mapping[str, bool], second: Mapping[str, bool], cluster: Callable[[str], str]
+) -> McNemarResult:
+    """The paired test with one vote per *cluster* of questions, not per question.
+
+    McNemar assumes the pairs are independent. When each question is asked
+    twice — once per language — the two askings mostly stand or fall together,
+    and counting them separately roughly doubles the evidence. Here a cluster
+    counts once, for whichever arm got more of it right.
+
+    Args:
+        first: Question id -> correct, for one arm.
+        second: The same for the other arm, over the same ids.
+        cluster: Maps a question id to the cluster it belongs to.
+    """
+    if set(first) != set(second):
+        raise ValueError("Paired comparison needs the same questions in both arms")
+    score: dict[str, list[int]] = {}
+    for question in first:
+        totals = score.setdefault(cluster(question), [0, 0])
+        totals[0] += first[question]
+        totals[1] += second[question]
+    only_first = sum(1 for a, b in score.values() if a > b)
+    only_second = sum(1 for a, b in score.values() if b > a)
+    both = sum(1 for a, b in score.values() if a == b and a > 0)
+    return McNemarResult(
+        only_first=only_first,
+        only_second=only_second,
+        both=both,
+        neither=len(score) - only_first - only_second - both,
         p_value=_two_sided_binomial(min(only_first, only_second), only_first + only_second),
     )
 

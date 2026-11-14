@@ -127,7 +127,7 @@ def generation_prompt(semantic: Any, tables: Sequence[str]) -> str:
     )
 
 
-def generate(model: Any, semantic: Any, tables: Sequence[str]) -> dict[str, list[str]]:
+def generate(model: Any, semantic: Any, tables: Sequence[str]) -> dict[str, dict[str, list[str]]]:
     """Ask a model for the lexicon. Returns ``{"columns": …, "values": …}``."""
     reply = model.complete(generation_prompt(semantic, tables), lexicon_schema(semantic, tables))
     # Through the same scanner every other reply goes through: a model wraps

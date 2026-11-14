@@ -57,6 +57,7 @@ class QueryService:
         auto_load: bool = True,
         params: Sequence[Any] | None = None,
         local_only: bool = False,
+        max_rows: int | None = None,
     ) -> QueryResult:
         """Run a read-only query.
 
@@ -73,9 +74,12 @@ class QueryService:
         mismatch is merely slow; a *semantic* one is silently wrong.
         """
         self._validator.validate(query)
+        # ``max_rows`` stops reading the result there. A capped result is a
+        # different answer from the whole one, so it is cached under its own key.
+        key = query if max_rows is None else f"{query} /* first {max_rows} rows */"
 
         if use_cache:
-            cached = self._cache.get(query, params)
+            cached = self._cache.get(key, params)
             if cached is not None:
                 logger.debug("Cache hit for query: %s", query[:80])
                 return cached
@@ -97,8 +101,10 @@ class QueryService:
                     except Exception as e:
                         logger.info("Pushdown failed, falling back to local execution: %s", e)
                     else:
+                        if max_rows is not None:
+                            result.rows = result.rows[:max_rows]
                         if use_cache:
-                            self._cache.put(query, result, ttl=cache_ttl)
+                            self._cache.put(key, result, ttl=cache_ttl)
                         return result
 
             if plan.is_refused:
@@ -115,7 +121,12 @@ class QueryService:
                     logger.debug("Reading slices: %s", executed[:160])
 
         return self._execute_and_cache(
-            executed, key=query, use_cache=use_cache, cache_ttl=cache_ttl, params=params
+            executed,
+            key=key,
+            use_cache=use_cache,
+            cache_ttl=cache_ttl,
+            params=params,
+            max_rows=max_rows,
         )
 
     def materialize_for(self, shape: QueryShape) -> dict[TableRef, str]:
@@ -166,10 +177,11 @@ class QueryService:
         use_cache: bool,
         cache_ttl: int | None,
         params: Sequence[Any] | None,
+        max_rows: int | None = None,
     ) -> QueryResult:
         """Run ``executed`` on the store and cache the result under ``key``."""
         started = time.perf_counter()
-        rows = self._store.execute(executed, params)
+        rows = self._store.execute(executed, params, max_rows=max_rows)
         elapsed_ms = (time.perf_counter() - started) * 1000
         result = QueryResult.from_rowset(rows, sql=key, execution_time_ms=elapsed_ms)
 

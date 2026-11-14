@@ -15,16 +15,18 @@ The two runs below are checked in under `bench/results-1.5b/` and
 `bench/results-7b/`, named for the model that produced them; a fresh run
 writes to `bench/results/`, which is ignored.
 
-The thresholds that decide the outcome were **written down before the first
-run** and are applied mechanically by `runner.verdict`, so the result is not
-re-litigated after the fact.
+The thresholds that decide the outcome are applied mechanically by
+`runner.verdict`, so the result is not re-litigated after the fact. They were
+fixed before the first run, but the repository cannot show that: thresholds,
+arms and results all arrive in the same commit (`6eae338`), and the arm the
+verdict judges was chosen after the others had been tried.
 
 ## The arms
 
 | Arm | How the request is chosen |
 |---|---|
 | `raw` | The model writes SQL from the DDL alone. |
-| `catalog` | The model writes SQL from Warp's enriched `x-llm-context`. |
+| `catalog` | The model writes SQL from a catalog-style description of the schema — hand-written in `run_duckdb.py` in the shape of Warp's `x-llm-context`, not fetched from Warp. |
 | `semantic` | The model writes a DSL request as free JSON. |
 | `semantic-schema` | The same, with decoding constrained to a schema built from the semantic model. |
 | `lexicon` | No model at all: words are matched against the semantic model. |
@@ -43,6 +45,11 @@ numbers are reported rather than averaged.
 > against the code now in the tree. Reproduce with
 > `python -m bench.run_duckdb qwen2.5-coder:7b bench/results-7b` (~30 min,
 > needs a local ollama) before quoting these anywhere that matters.
+
+> **The "Hallucinated" column is not comparable between the SQL arms and the
+> rest.** For `raw` and `catalog` it was produced by a word-based check that
+> also counted table aliases, CTE names and ordinary functions as invented
+> names — see the caveats. The numbers are left as measured.
 
 **qwen2.5-coder:1.5b**
 
@@ -78,13 +85,18 @@ need a join the DSL refuses outright. On the 34 it can answer, that reverses to
 
 **Constraining decoding removes form errors completely, and only matters while
 they exist.** The unconstrained semantic arm failed 17 of 40 on form alone:
-7 metrics written `sum(tutar)` instead of `tutar:sum`, 6 names that did not
-exist, 4 `order_by` values handed over as lists. A JSON schema derived from the
+7 metrics written with no aggregation (`count`, `*`), 6 names used on a table
+that does not have them (5 of them `segment` on `islemler`, in join questions
+the DSL cannot answer anyway), 4 `order_by` values handed over as lists or
+objects. A JSON schema derived from the
 semantic model — one `oneOf` branch per table, one per measure, values
 enumerated for categorical dimensions — made every one of those
-unrepresentable, worth +17.5 points at 1.5b. At 7b it is worth +2.5, because a
-7b model does not make those mistakes. It still takes hallucination to zero,
-and it still costs roughly double the latency.
+unrepresentable. The constrained arm scores +17.5 points at 1.5b and +2.5 at
+7b, where the model does not make those mistakes — but that gap is not the
+constraint alone: the constrained prompt also lists every categorical value
+(`durum (basarili | iptal)`), which the unconstrained arm never sees, and uses
+a different instruction with no worked example. It still cannot name something
+that does not exist, and it still costs roughly double the latency.
 
 **Instructions hurt a small model; constraints help it.** An earlier version of
 the constrained prompt spelled out the pragmatics a schema cannot carry — use a
@@ -107,7 +119,12 @@ question, and the result is a JSON file: reviewable before use, diffable in
 version control, correctable by whoever owns the data, and absent at query
 time. Generation is itself constrained to the names that exist, so it can say
 what a column is called but never invent one. The generated lexicon scores
-21/40 against the hand-written 20/40, from a single 37-second call.
+21/40 against the hand-written 20/40, from a single 37-second call. That is
+weaker evidence than it looks: the generation prompt's two worked examples are
+the hand-written entries for `tutar` and `basarili` — the measure and the
+filter value most of these questions turn on — so the model was shown the
+answers that matter most. The matcher's aggregation and grain tables are
+hand-written for both.
 
 Getting that schema right took two tries, in opposite directions. Requiring a
 word for every name produced `tutar: ["tutar", " tutar"]` — with no way to say
@@ -122,39 +139,70 @@ none are. A copilot lives on that difference: correct one field, or start
 again. `repair.py` measures it, and the same neighbourhood is a ready-made "did
 you mean" menu — computable for a structured request, not for a SELECT.
 
-**Seeding the model with the deterministic answer beat everything.**
-`lexicon+repair` reached 82.4% on single-table questions with zero
-hallucination, against the catalog arm's 70.6% with 20.6%. Against the lexicon
-alone it is +20.6 points with **7 questions fixed and none broken**
-(p = 0.016); against the unconstrained DSL arm +38.2 (p = 0.0002). Each part
-does what it is good at: word matching finds the columns and values, the model
+**Seeding the model with the deterministic answer gave the best DSL arm, and
+did not beat the catalog arm.** `lexicon+repair` reached 82.4% on single-table
+questions against the catalog arm's 70.6%, a gap this run cannot tell from
+chance (3 questions against 1, p = 0.63). Against the lexicon alone it is +20.6
+points with 7 answers fixed and none broken — but those are 4 distinct
+questions, each asked in two languages, so the evidence is 4 against 0
+(p = 0.125), not 7 against 0. Against the unconstrained and the constrained
+DSL arms it is 8 questions against 0 (p = 0.008). Each part does what it is
+good at: word matching finds the columns and values, the model
 judges whether that is what was asked, the schema stops either from inventing
 anything.
 
 **And it is sharply model-size dependent — measured, not assumed.** The same
 arm on 1.5b scores 27.5% where the lexicon alone scores 52.5%: it fixed 1
-question and **broke 11**, p = 0.006. A small model does not correct a good
-deterministic answer, it vandalises it. `RepairArm(fall_back=True)` keeps the
+answer and **broke 11** — 7 distinct questions against 1, p = 0.07. A small
+model does not correct a good deterministic answer, it vandalises it. `RepairArm(fall_back=True)` keeps the
 proposal when a correction will not run, and `Answer.fell_back` records that it
 did — but nothing stops a model from confidently replacing a right answer with
 a wrong one, so below some capacity this design is worse than no model at all.
 
 ## Caveats
 
-- **N = 40**, over a 10-row fixture. Confidence intervals are wide and mostly
-  overlapping. The comparisons that separate cleanly are `lexicon+repair`
-  against `lexicon` (in both directions, one run each), against `semantic` and
-  against `semantic-schema`. `lexicon+repair` against `catalog` does **not**
-  separate (p = 0.29 on the subset): read the accuracy gap as a tie and the
-  hallucination gap as the real difference.
+- **N = 20, asked twice.** The 40 items are 20 questions in Turkish and in
+  English, over a 10-row fixture, and an arm almost always gets both languages
+  of a question right or both wrong (20 of 20 for `lexicon+repair` at 7b). The
+  per-item McNemar in the result files treats them as 40 independent pairs and
+  so overstates the evidence. The p-values quoted above count each question
+  once (`stats.sign_test_by_cluster`; `tests/test_readme_claims.py` recomputes
+  them from the checked-in results). On that count only `lexicon+repair`
+  against `semantic` and against `semantic-schema` at 7b fall below 0.05
+  (p = 0.008 each), and with five comparisons on two question sets and two
+  models not even those survive a correction for multiple comparisons.
+  `lexicon+repair` against `lexicon` is suggestive in both directions and
+  significant in neither; against `catalog` it is a tie.
+- **Grading favours answers shaped like the DSL's.** A result must match the
+  gold rows column for column, in the gold's column order, and the gold queries
+  project the way the DSL does — dimension first, month as a midnight
+  timestamp. A correct SQL answer with the columns swapped, with `SELECT *`, or
+  with the month as a date or `'2024-01'` is graded wrong. `q07` and `q15` were
+  answered correctly by no arm in either run. How many SQL-arm losses this
+  caused cannot be recovered: the result files keep no answer text.
 - **The lexicon was corrected against this question set; the LLM arms were
   not.** Its first untuned score was 15/40. Read its number as optimistic in a
   way the others' are not.
 - **One-edit repair is judged on gold rows**, so on a small fixture a
   coincidentally matching neighbour counts as a repair.
-- **Hallucination rises with model size on the SQL arms** (catalog 15% → 27.5%)
-  while only one query failed to run at 7b — so the flag there is mostly
-  aliasing, not broken SQL, and should not be read as it is at 1.5b.
+- **The SQL arms' hallucination rate is an artefact at 7b.** The check that
+  produced it read identifier-looking *words* out of the SQL. At 7b every name
+  it flagged for `raw` and `catalog` is a table alias (`i`, `m`, `t1`, `i2`), a
+  keyword (`within`, `month`, `year`, `current_date`) or a function
+  (`percentile_cont`, `date_sub`); 10 of the 24 flagged answers were graded
+  correct and the one query that failed in each arm failed on a function
+  signature, not a missing column. So 32.5% and 27.5% are not rates of invented
+  names, and no comparison of hallucination between the SQL arms and the DSL
+  arms should be drawn from these runs. At 1.5b some flags are real (`canal`,
+  `channel`, `amount`). The same check also *missed* a real column used on the
+  wrong table. `scoring.py` now reads names from the parsed statement, which
+  fixes the false positives for the next run; these runs cannot be re-scored
+  because the answers were not kept. That the DSL arms cannot name a missing
+  column is structural, and does not depend on this column.
+- **The raw arm is told to write DuckDB SQL and shown Oracle DDL**
+  (`NUMBER`, `VARCHAR2`), while the catalog arm gets a dialect-neutral
+  description with English glosses. Catalog-over-raw therefore mixes what a
+  catalog adds with what a mismatched dialect costs.
 - **Oracle and SQL Server arms are wired and unrun.** `seed_oracle.sql` and
   `models.oracle_executor` are in place; the run needs a container.
 
@@ -167,7 +215,7 @@ a wrong one, so below some capacity this design is worse than no model at all.
 | `lexicon.py` | Word matching, with no model in it. |
 | `lexicon_gen.py` | A model writing the lexicon, once per schema. |
 | `repair.py` | One-edit repair: how much work a wrong answer leaves. |
-| `scoring.py`, `stats.py` | Grading, Wilson intervals, McNemar exact. |
+| `scoring.py`, `stats.py` | Grading, Wilson intervals, McNemar exact, and the same test with one vote per question. |
 | `runner.py` | Running arms, pairing them, applying the thresholds. |
 | `questions/` | The question set, as data. |
 | `lexicons/` | Generated vocabularies, checked in for review. |

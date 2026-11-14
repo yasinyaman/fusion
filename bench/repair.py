@@ -71,16 +71,16 @@ def _as_metric(metric: Any) -> dict[str, Any] | None:
         return dict(metric)
     if not isinstance(metric, str):
         return None
-    from fusion.domain.metric_dsl import parse_metric
+    from fusion.domain.metric_dsl import MeasureRef, TransformCall, parse_metric
 
     try:
         expr = parse_metric(metric)
     except Exception:
         return None
     transform = ""
-    if hasattr(expr, "inner"):
+    if isinstance(expr, TransformCall):
         transform, expr = expr.name, expr.inner
-    if not hasattr(expr, "measure"):
+    if not isinstance(expr, MeasureRef):
         return None
     structured: dict[str, Any] = {"measure": expr.measure, "aggregation": expr.agg.lower()}
     if transform:
@@ -172,7 +172,9 @@ def _dimension_edits(
                 continue
             if len(dimensions) <= 1:
                 yield _swap(request, dimensions=[candidate])
-            if dimensions:
+            # The same column at a second grain would give two result columns
+            # one name, which the layer refuses.
+            if dimensions and all(d.get("column") != column for d in dimensions):
                 yield _swap(request, dimensions=[*dimensions, candidate])
     first = metrics[0] if metrics and isinstance(metrics[0], Mapping) else {}
     if dimensions and first.get("transform") not in _calendar_transforms():
@@ -180,7 +182,7 @@ def _dimension_edits(
         # there is a single breakdown, and more than one edit when there are
         # two — which is the whole point of the loop.
         for index in range(len(dimensions)):
-            yield _swap(request, dimensions=dimensions[:index] + list(dimensions[index + 1 :]))
+            yield _swap(request, dimensions=[*dimensions[:index], *dimensions[index + 1 :]])
 
 
 def _filter_edits(

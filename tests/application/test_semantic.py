@@ -146,7 +146,7 @@ class TestFilters:
         query = semantic.build(
             TABLE, ["amount:sum"], filters=[{"column": "amount", "op": "is_null"}]
         )
-        assert query.filters == (Predicate(column="amount", op="is_null", value=False),)
+        assert query.filters == (Predicate(column="amount", op="is_null", value=True),)
 
     def test_in_takes_a_list(self, semantic):
         query = semantic.build(

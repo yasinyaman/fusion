@@ -64,7 +64,11 @@ class TestValidate:
         assert Settings(env="production", api_key="").validate()
 
     def test_production_real_key_ok(self):
-        s = Settings(env="production", api_key="s3cr3t", cors_origins=("https://app.example.com",))
+        s = Settings(
+            env="production",
+            api_key="s3cr3t-and-long-enough",
+            cors_origins=("https://app.example.com",),
+        )
         assert s.validate() == []
 
     def test_production_wildcard_cors_fails(self):

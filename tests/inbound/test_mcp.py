@@ -29,7 +29,7 @@ def server(app_with_data):
 
 
 class TestMCPServer:
-    def test_registers_ten_tools(self, server):
+    def test_registers_twelve_tools(self, server):
         tools = _await(server.list_tools())
         assert [t.name for t in tools] == list(TOOL_NAMES)
         assert all(t.description for t in tools)

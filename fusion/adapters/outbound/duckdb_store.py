@@ -13,6 +13,7 @@ import shutil
 import threading
 import uuid
 from collections.abc import Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -92,7 +93,9 @@ class DuckDBStore:
         memory_limit: str = "4GB",
         external_access: bool = False,
         max_temp_directory_size: str | None = None,
+        query_timeout: float = 0,
     ) -> None:
+        self._query_timeout = query_timeout
         self._database = database or ":memory:"
         self._threads = int(threads)
         self._memory_limit = _check_size(memory_limit, "memory_limit")
@@ -284,7 +287,11 @@ class DuckDBStore:
         try:
             with self._lock:
                 try:
-                    match = " AND ".join(f"t.{_quote(k)} = s.{_quote(k)}" for k in keys)
+                    # IS NOT DISTINCT FROM: a NULL key is a key too, or a row
+                    # re-read at the newest watermark would be inserted again.
+                    match = " AND ".join(
+                        f"t.{_quote(k)} IS NOT DISTINCT FROM s.{_quote(k)}" for k in keys
+                    )
                     self._conn.execute(
                         f"DELETE FROM {target} AS t "
                         f"WHERE EXISTS (SELECT 1 FROM {stage} AS s WHERE {match})"
@@ -364,11 +371,17 @@ class DuckDBStore:
             raise QueryError(
                 f"create_table_as is reserved for materialized views (mv_*): '{table_name}'"
             )
-        with self._lock:
+        # The SELECT is the caller's, so it answers to the same timeout as a query.
+        with self._lock, self._deadline():
             try:
                 self._conn.execute(
                     f"CREATE OR REPLACE TABLE {_quote(table_name)} AS ({select_sql})"
                 )
+            except duckdb.InterruptException:
+                raise QueryError(
+                    f"Building '{table_name}' stopped after {self._query_timeout:g}s "
+                    "(FUSION_QUERY_TIMEOUT). Narrow the view's query."
+                ) from None
             except duckdb.Error as e:
                 raise QueryError(f"Failed to create table '{table_name}': {e}") from e
 
@@ -378,8 +391,10 @@ class DuckDBStore:
 
     # -- querying -----------------------------------------------------------
 
-    def execute(self, sql: str, params: Sequence[Any] | None = None) -> RowSet:
-        with self._lock:
+    def execute(
+        self, sql: str, params: Sequence[Any] | None = None, max_rows: int | None = None
+    ) -> RowSet:
+        with self._lock, self._deadline():
             try:
                 cursor = (
                     self._conn.execute(sql, list(params))
@@ -389,10 +404,33 @@ class DuckDBStore:
                 if cursor.description is None:
                     return RowSet.empty()
                 columns = tuple(desc[0] for desc in cursor.description)
-                rows = cursor.fetchall()
+                # fetchmany streams: the rows past the cap are never built.
+                rows = cursor.fetchall() if max_rows is None else cursor.fetchmany(max_rows)
+            except duckdb.InterruptException:
+                raise QueryError(
+                    f"Query stopped after {self._query_timeout:g}s (FUSION_QUERY_TIMEOUT). "
+                    "Narrow it, or filter the tables it reads down first."
+                ) from None
             except duckdb.Error as e:
                 raise QueryError(f"Query execution failed: {e}") from e
         return RowSet(columns=columns, rows=rows)
+
+    @contextmanager
+    def _deadline(self) -> Iterator[None]:
+        """Interrupt the running statement once the query timeout passes.
+
+        Entered with the lock held, so the statement interrupted is this one.
+        """
+        if self._query_timeout <= 0:
+            yield
+            return
+        timer = threading.Timer(self._query_timeout, self._conn.interrupt)
+        timer.daemon = True
+        timer.start()
+        try:
+            yield
+        finally:
+            timer.cancel()
 
     def describe(self, table_name: str) -> list[ColumnInfo]:
         escaped = table_name.replace("'", "''")

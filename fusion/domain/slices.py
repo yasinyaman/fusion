@@ -120,6 +120,8 @@ class Predicate:
             return False
         if other.op == "eq":
             return self.op == "in" and set(self.value) == {other.value}
+        if not _orderable(self.value, other.value):
+            return False
         if other.op in _LOWER_BOUNDS and self.op in (*_LOWER_BOUNDS, "eq"):
             strict = other.op == "gt" and self.op != "gt"
             return _compare("gt" if strict else "gte", self.value, other.value)
@@ -135,6 +137,83 @@ class Predicate:
         if self.op == "is_null":
             return f"{self.column} IS {'' if self.value else 'NOT '}NULL"
         return f"{self.column} {_SQL_OP_TEXT[self.op]} {self.value!r}"
+
+
+_ISO_TEMPORAL = re.compile(r"\d{4}-\d{2}-\d{2}([ T]\d{2}:\d{2}(:\d{2}(\.\d+)?)?)?")
+
+
+def _orderable(left: Any, right: Any) -> bool:
+    """Whether Python orders these two literals the way a database would.
+
+    Numbers, yes. Strings only when both are zero-padded ISO dates of the same
+    shape: ``'9' < '10'`` and ``'2024-2-1' < '2024-10-1'`` are both false as
+    text and true as the number or date the column holds. The date/time
+    separator must match too: ``'T'`` sorts after ``' '`` whatever the time.
+    """
+    if isinstance(left, str) and isinstance(right, str):
+        return (
+            len(left) == len(right)
+            and left[10:11] == right[10:11]
+            and _ISO_TEMPORAL.fullmatch(left) is not None
+            and _ISO_TEMPORAL.fullmatch(right) is not None
+        )
+    return not isinstance(left, str | bool) and not isinstance(right, str | bool)
+
+
+_NUMERIC_TYPES = frozenset(
+    "integer int int2 int4 int8 bigint smallint tinyint hugeint "
+    "double float float4 float8 real decimal numeric".split()
+)
+_TEXT_TYPES = ("varchar", "text", "char", "string")
+_TEMPORAL_TYPES = ("date", "time")
+
+
+def column_kind(column_type: str | None) -> str | None:
+    """``bool``, ``numeric``, ``text`` or ``temporal``; None when unknown."""
+    kind = (column_type or "").lower()
+    words = kind.split("(")[0].split()
+    if kind.startswith("bool"):
+        return "bool"
+    if words and words[0] in _NUMERIC_TYPES:
+        return "numeric"
+    if kind.startswith(_TEXT_TYPES):
+        return "text"
+    if kind.startswith(_TEMPORAL_TYPES):
+        return "temporal"
+    return None
+
+
+def predicate_is_pushable(predicate: Predicate, column_type: str | None) -> bool:
+    """Whether a source would evaluate ``predicate`` the way the store does.
+
+    The original WHERE still runs locally, but only over the rows the source
+    sent. ``zip = 123`` on a text column matches ``'0123'`` in DuckDB (it
+    casts) and not at a source that compares text — so a literal is pushed
+    only against a column of its own kind. Unknown type: not pushed.
+    """
+    if predicate.op == "is_null":
+        return True
+    kind = column_kind(column_type)
+    values = predicate.value if predicate.op == "in" else (predicate.value,)
+    if kind == "bool":
+        return predicate.op in ("eq", "ne", "in") and all(isinstance(v, bool) for v in values)
+    if any(isinstance(v, bool) for v in values):
+        return False
+    if kind == "numeric":
+        return predicate.op != "like" and all(isinstance(v, int | float) for v in values)
+    if kind in ("text", "temporal"):
+        return all(isinstance(v, str) for v in values)
+    return False
+
+
+def keys_are_pushable(driver_type: str | None, target_type: str | None) -> bool:
+    """Whether keys read from one column can be sent as an ``IN`` on another.
+
+    The join compares them in the store, where DuckDB casts (``7 = '07'``);
+    the source compares them as they are, so the two kinds must agree.
+    """
+    kind = column_kind(target_type)
+    return kind is not None and kind == column_kind(driver_type)
 
 
 def _compare(op: str, left: Any, right: Any) -> bool:

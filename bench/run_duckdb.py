@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 import duckdb
 
@@ -83,7 +84,7 @@ def main(model_name: str = "qwen2.5-coder:1.5b", out: str = "bench/results") -> 
     # a re-run. The constrained arm goes last because `build_report` reads the
     # verdict off the final one, and the pre-registered thresholds are about
     # the DSL at its best.
-    arms = [
+    arms: list[Any] = [
         TextToSqlArm("raw", model, executor, questions.schema_sql, "DuckDB"),
         TextToSqlArm("catalog", model, executor, CATALOG_CONTEXT, "DuckDB"),
         SemanticArm("semantic", structured, fusion, tables_under_test),

@@ -34,7 +34,9 @@ class BackupService:
         enabled: bool = False,
         scheduler: Scheduler | None = None,
         clock: Callable[[], float] = time.time,
+        on_restored: Callable[[], None] | None = None,
     ) -> None:
+        self._on_restored = on_restored
         self._store = store
         self.backup_dir = Path(backup_dir)
         self.interval = interval
@@ -87,7 +89,8 @@ class BackupService:
         if not self.enabled:
             raise BackupError("Backup is disabled (set FUSION_BACKUP_ENABLED=true)")
         self.backup_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
+        # Microseconds: two backups in one second must not share a name.
+        stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S_%f")
 
         if self._store.database_path is None:
             target = self.backup_dir / f"{BACKUP_PREFIX}{stamp}"
@@ -110,6 +113,8 @@ class BackupService:
             self._store.import_from(backup)
         else:
             self._store.restore_from(backup)
+        if self._on_restored is not None:
+            self._on_restored()  # cached results describe the data that was just replaced
         logger.info("Backup restored from %s", backup)
 
     def list_backups(self) -> list[BackupInfo]:

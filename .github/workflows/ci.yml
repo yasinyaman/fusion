@@ -32,13 +32,19 @@ jobs:
         run: uv sync --all-extras --frozen
 
       - name: Lint (ruff)
-        run: uv run ruff check fusion/ tests/ demo/
+        run: uv run ruff check fusion/ tests/ demo/ bench/
 
       - name: Format check (ruff)
-        run: uv run ruff format --check fusion/ tests/ demo/
+        run: uv run ruff format --check fusion/ tests/ demo/ bench/
 
       - name: Run tests (with coverage gate)
         run: uv run pytest tests/ -v --cov=fusion --cov-report=term-missing
+
+      # Separate from the gate above: the benchmark is not part of the package,
+      # so its tests must not count towards (or against) fusion's coverage.
+      # They need no model: every arm that calls one is driven by a fake.
+      - name: Run benchmark harness tests
+        run: uv run pytest bench/tests --no-cov
 
   typecheck:
     runs-on: ubuntu-latest
@@ -55,7 +61,7 @@ jobs:
         run: uv sync --all-extras --frozen
 
       - name: Type check (mypy)
-        run: uv run mypy fusion/
+        run: uv run mypy fusion/ bench/
 
   security-audit:
     runs-on: ubuntu-latest

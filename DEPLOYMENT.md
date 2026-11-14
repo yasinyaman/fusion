@@ -72,10 +72,10 @@ All settings are environment variables read once at startup by `Settings.from_en
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `FUSION_ENV` | `development` | `production` enables fail-fast validation and hides debug endpoints |
-| `FUSION_API_KEY` | *(required in production)* | API key for authentication |
+| `FUSION_ENV` | `development` | One of `development`, `test`, `staging`, `production` (or `prod`); anything else refuses to start. `production` requires the API key and hides debug endpoints |
+| `FUSION_API_KEY` | *(required in production)* | API key for authentication; at least 16 characters in production |
 | `FUSION_CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
-| `FUSION_RATE_LIMIT` | `100/minute` | Rate limit per API key (per IP without a key) |
+| `FUSION_RATE_LIMIT` | `100/minute` | Rate limit for the configured API key; per IP for requests without it, and separately per IP for failed key attempts on any path. Any form slowapi reads: `100/minute`, `10 per 5 minutes`, `1000/month`, several joined by `,` `;` or `\|` |
 | `FUSION_DEBUG_ENDPOINTS` | *(auto)* | `true`/`false` to force `/debug/config` on/off |
 | `FUSION_LOG_LEVEL` | `info` | debug/info/warning/error |
 | `FUSION_LOG_FORMAT` | `json` | json/text |
@@ -95,8 +95,9 @@ All settings are environment variables read once at startup by `Settings.from_en
 | `FUSION_IN_CHUNK_SIZE` | `1000` | Keys per request when passing them |
 | `FUSION_REFRESH_CONFIG` | *(none)* | JSON: `{"src.table": {"watermark_column": "...", "key_columns": [...]}}` |
 | `FUSION_CACHE_TTL` / `FUSION_CACHE_MAX_ENTRIES` | `300` / `500` | Query cache |
+| `FUSION_QUERY_TIMEOUT` | `300` | Seconds a query, or building a materialized view, may run on the store before it is interrupted (0 = no limit; at most a week) |
 | `FUSION_BACKUP_ENABLED` | `false` | Enable automated backups |
-| `FUSION_BACKUP_INTERVAL` / `FUSION_BACKUP_RETENTION_DAYS` | `3600` / `7` | Backup schedule and retention |
+| `FUSION_BACKUP_INTERVAL` / `FUSION_BACKUP_RETENTION_DAYS` | `3600` / `7` | Backup schedule and retention (at least 60 seconds / 1 day) |
 | `FUSION_BACKUP_PATH` | `/app/data/backups` | Backup directory |
 | `FUSION_CIRCUIT_BREAKER_THRESHOLD` / `FUSION_CIRCUIT_BREAKER_TIMEOUT` | `5` / `60` | Circuit breaker |
 | `FUSION_POOL_SIZE` / `FUSION_POOL_MAX_OVERFLOW` | `10` / `5` | HTTP connection pool |
@@ -175,7 +176,7 @@ Metrics: `GET /cache/stats`, `GET /backup/stats`, `GET /debug/config` (non-produ
 
 ## Scaling
 
-Fusion is stateless (in-memory DuckDB). Run several instances behind a load balancer (sticky sessions help the cache); each connects to Warp independently. For vertical scaling raise the container limits and `FUSION_MEMORY_LIMIT` / `FUSION_THREADS` together.
+Fusion keeps its state in the process: loaded tables, slices, materialized views, the query cache and rate-limit counters all live in one instance's memory and are gone on restart. Several instances behind a load balancer each load their own copy of the data and do not see each other's views, so use sticky sessions and expect a view created on one instance to be missing on another. For vertical scaling raise the container limits and `FUSION_MEMORY_LIMIT` / `FUSION_THREADS` together.
 
 ## Security Best Practices
 

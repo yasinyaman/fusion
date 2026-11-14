@@ -24,7 +24,7 @@ from fusion.domain.policy import (
     refusal_message,
 )
 from fusion.domain.query_shape import QueryShape
-from fusion.domain.slices import SliceSpec
+from fusion.domain.slices import Predicate, SliceSpec, keys_are_pushable, predicate_is_pushable
 from fusion.ports.sql_policy import SqlAnalyzer
 
 logger = logging.getLogger(__name__)
@@ -199,8 +199,34 @@ class FetchPlanner:
         use = shape.use_for(ref)
         if use is None:
             return SliceSpec.FULL
+        types = self._column_types(ref)
+        pushable: list[Predicate] = []
+        seen: set[tuple[str, str]] = set()
+        for p in use.predicates:
+            key = (p.column.lower(), p.op)
+            # A source's filters may hold one value per column and operator
+            # (Warp's URL ones do); a second such condition stays local.
+            if key not in seen and predicate_is_pushable(p, types.get(p.column.lower())):
+                seen.add(key)
+                pushable.append(p)
+        if len(pushable) != len(use.predicates):
+            # The source no longer applies every condition, so it must not
+            # apply the LIMIT either.
+            return SliceSpec(columns=use.columns, predicates=tuple(pushable))
         limit = shape.limit if shape.limit_is_pushable else None
         return use.slice_spec(limit=limit)
+
+    def _column_types(self, ref: TableRef) -> dict[str, str]:
+        if not self._catalog.has_table(ref):
+            return {}
+        return {c.name.lower(): c.type for c in self._catalog.get_table(ref).columns}
+
+    def full_load_refusal(self, ref: TableRef) -> str:
+        """Why ``ref`` may not be loaded whole, or ``""`` when it may."""
+        estimate = self._table_estimate(ref)
+        if self._policy.allows_full_load(estimate):
+            return ""
+        return refusal_message(ref, estimate, self._policy)
 
     def _table_estimate(self, ref: TableRef) -> int | None:
         """Source-side size of a table, as far as the catalog knows it."""
@@ -256,6 +282,11 @@ class FetchPlanner:
                 continue
             driver = by_ref.get(driver_use.ref)
             if driver is None or driver.action == "refuse":
+                continue
+            driver_type = self._column_types(driver.ref).get(other[1].lower())
+            target_type = self._column_types(target.ref).get(target_column.lower())
+            if not keys_are_pushable(driver_type, target_type):
+                # The source would compare the keys differently from the join.
                 continue
             driver_rows = self._driver_size(driver)
             if not self._policy.allows_semi_join(driver_rows):

@@ -1,4 +1,4 @@
-"""REST routes: the 10 tools plus health, readiness, backup and debug endpoints."""
+"""REST routes: the 12 tools plus health, readiness, backup and debug endpoints."""
 
 from __future__ import annotations
 
@@ -20,10 +20,13 @@ from fusion.adapters.inbound.rest.schemas import (
 from fusion.application.app import FusionApp
 from fusion.application.settings import Settings
 from fusion.application.tool_schemas import TOOL_DEFINITIONS
+from fusion.application.tools import SOURCE_UNAVAILABLE
 
 logger = logging.getLogger(__name__)
 
-_FORBIDDEN_MARKERS = ("Guardrail", "Only SELECT", "Blocked", "Multi-statement")
+#: How a GuardrailViolation message starts. Matched at the start only: a view
+#: or column that happens to be called "Blocked" is not a refusal.
+_GUARDRAIL_PREFIXES = ("Blocked ", "Multi-statement SQL", "Empty SQL query", "Failed to parse SQL")
 
 
 def fusion_of(request: Request) -> FusionApp:
@@ -40,10 +43,14 @@ def handle_result(result: dict[str, Any]) -> dict[str, Any]:
     """Turn a tool ``{"error": ...}`` dict into the matching HTTP error."""
     if "error" in result:
         message = str(result["error"])
-        if any(marker in message for marker in _FORBIDDEN_MARKERS):
+        if message.startswith(_GUARDRAIL_PREFIXES):
             raise HTTPException(status_code=403, detail=message)
-        if "Unknown tool" in message:
+        if message.startswith("Unknown tool"):
             raise HTTPException(status_code=404, detail=message)
+        if message.startswith(SOURCE_UNAVAILABLE):
+            raise HTTPException(status_code=503, detail=message)
+        if message.startswith("Internal error"):
+            raise HTTPException(status_code=500, detail=message)
         raise HTTPException(status_code=400, detail=message)
     return result
 

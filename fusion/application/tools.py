@@ -1,4 +1,4 @@
-"""ToolService: the 10 LLM tools, dispatched by name.
+"""ToolService: the 12 LLM tools, dispatched by name.
 
 Every method returns a JSON-serializable dict; failures become
 ``{"error": "..."}`` so MCP/REST/SDK callers get one uniform shape.
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from fusion.application.planner import FetchPlanner
@@ -18,7 +18,13 @@ from fusion.application.sources import SourceService
 from fusion.application.tool_schemas import TOOL_NAMES
 from fusion.application.views import MaterializedViewService
 from fusion.domain.catalog import SchemaCatalog
-from fusion.domain.errors import BackupError, GuardrailViolation, QueryError, SchemaError
+from fusion.domain.errors import (
+    BackupError,
+    ConnectionError,
+    GuardrailViolation,
+    QueryError,
+    SchemaError,
+)
 from fusion.domain.identifiers import (
     ALLOWED_AGG_FUNCS,
     MAX_RESULT_ROWS,
@@ -27,7 +33,7 @@ from fusion.domain.identifiers import (
 )
 from fusion.domain.models import MV_PREFIX, QueryResult, RowSet, TableRef
 from fusion.domain.policy import TargetPlan
-from fusion.domain.slices import Predicate, SliceSpec
+from fusion.domain.slices import Predicate, SliceSpec, predicate_is_pushable
 from fusion.ports.analytics_store import AnalyticsStore
 from fusion.ports.cache import QueryCache
 from fusion.ports.data_source import PushdownCapable
@@ -39,6 +45,9 @@ _WHERE_HELP = (
     "example \"status = 'paid' AND amount > 100\". OR, NOT, functions, "
     "subqueries and parameters cannot be sent to the source."
 )
+
+#: How a tool error starts when the source behind it is down (REST: 503).
+SOURCE_UNAVAILABLE = "Source unavailable"
 
 logger = logging.getLogger(__name__)
 
@@ -79,11 +88,15 @@ class ToolService:
             return handler(**dict(arguments or {}))
         except (GuardrailViolation, QueryError, SchemaError, BackupError) as e:
             return {"error": str(e)}
+        except ConnectionError as e:
+            # Expected, and the caller can act on it: retry later.
+            return {"error": f"{SOURCE_UNAVAILABLE}: {e}"}
         except TypeError as e:
             return {"error": f"Invalid arguments for {tool_name}: {e}"}
         except Exception as e:
             logger.exception("Tool execution error: %s", tool_name)
-            return {"error": f"Internal error: {e}"}
+            # The text of an unexpected exception is for the log, not the caller.
+            return {"error": f"Internal error ({type(e).__name__}); see the server log."}
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -142,7 +155,8 @@ class ToolService:
         }
 
     def query_data(self, sql: str) -> dict[str, Any]:
-        return self._format_result(self._query.sql(sql))
+        # One row past the cap is enough to know the result was cut.
+        return self._format_result(self._query.sql(sql, max_rows=MAX_RESULT_ROWS + 1))
 
     def search_data(
         self, table: str, filter_column: str, filter_value: str, limit: int = 20
@@ -263,7 +277,7 @@ class ToolService:
             return {"error": "Use 'source.table' format (e.g. 'mydb.orders')"}
         if not self._catalog.has_table(ref):
             return {"error": str(_missing_table_error(self._catalog, ref))}
-        if where is None and not columns:
+        if not where and not columns:  # an LLM sends "" for an argument it leaves out
             return self._load_whole_table(ref, table)
         return self._load_slice(ref, table, where, columns)
 
@@ -296,7 +310,25 @@ class ToolService:
             return {"error": _WHERE_HELP}
         if where and not use.predicates:
             return {"error": _WHERE_HELP}
+        types = {c.name.lower(): c.type for c in self._catalog.get_table(ref).columns}
+        for predicate in use.predicates:
+            if not predicate_is_pushable(predicate, types.get(predicate.column.lower())):
+                return {
+                    "error": f"Cannot load a slice by '{predicate}': the value's type does "
+                    f"not match column '{predicate.column}', so the source would compare "
+                    "it differently. Quote text values and leave numbers bare."
+                }
         spec = use.slice_spec()
+        # The budget a query's slice answers to: listing every column, or a
+        # filter that keeps most of the table, is not a way around it.
+        policy = self._planner.policy
+        estimate = self._sources.estimate_slice(ref, spec)
+        if not policy.allows_slice(estimate):
+            return {
+                "error": f"Refusing to load this slice of {table}: about {estimate:,} rows "
+                f"match, over slice_max_rows={policy.slice_max_rows:,}. Narrow 'where', "
+                "or raise FUSION_SLICE_MAX_ROWS."
+            }
         target = TargetPlan(ref, spec, "load_slice")
         try:
             table_name = self._sources.ensure_slices([target])[ref]
@@ -428,29 +460,49 @@ class ToolService:
 
     @staticmethod
     def _format_result(result: QueryResult) -> dict[str, Any]:
-        records = result.to_records()
-        truncated = len(records) > MAX_RESULT_ROWS
+        columns = _unique_names(result.columns)
         return {
-            "columns": list(result.columns),
-            "rows": records[:MAX_RESULT_ROWS],
-            "row_count": result.row_count,
-            "truncated": truncated,
+            "columns": columns,
+            "rows": [dict(zip(columns, row, strict=True)) for row in result.rows[:MAX_RESULT_ROWS]],
+            "row_count": min(result.row_count, MAX_RESULT_ROWS),
+            "truncated": result.row_count > MAX_RESULT_ROWS,
             "execution_time_ms": round(result.execution_time_ms, 1),
             "from_cache": result.from_cache,
         }
 
     @staticmethod
     def _format_rowset(rows: RowSet, elapsed_ms: float = 0.0) -> dict[str, Any]:
-        records = rows.to_records()
-        truncated = len(records) > MAX_RESULT_ROWS
+        columns = _unique_names(rows.columns)
         return {
-            "columns": list(rows.columns),
-            "rows": records[:MAX_RESULT_ROWS],
-            "row_count": len(rows),
-            "truncated": truncated,
+            "columns": columns,
+            "rows": [dict(zip(columns, row, strict=True)) for row in rows.rows[:MAX_RESULT_ROWS]],
+            "row_count": min(len(rows), MAX_RESULT_ROWS),
+            "truncated": len(rows) > MAX_RESULT_ROWS,
             "execution_time_ms": round(elapsed_ms, 1),
             "from_cache": False,
         }
+
+
+def _unique_names(columns: Sequence[str]) -> list[str]:
+    """Column names with repeats suffixed (``id``, ``id_2``): a row is a dict.
+
+    A suffix skips any name already taken, including a real column called
+    ``id_2`` that comes later, so no two columns share a key.
+    """
+    taken = set(columns)
+    kept: set[str] = set()
+    names = []
+    for column in columns:
+        if column not in kept:
+            kept.add(column)
+            names.append(column)
+            continue
+        n = 2
+        while f"{column}_{n}" in taken:
+            n += 1
+        taken.add(f"{column}_{n}")
+        names.append(f"{column}_{n}")
+    return names
 
 
 def _missing_table_error(catalog: SchemaCatalog, ref: TableRef) -> SchemaError:

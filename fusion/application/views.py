@@ -12,7 +12,7 @@ from fusion.application.sources import SourceService
 from fusion.domain.errors import QueryError
 from fusion.domain.identifiers import is_valid_view_name
 from fusion.domain.models import QueryResult
-from fusion.domain.views import ViewSpec, parse_refresh_interval
+from fusion.domain.views import MIN_REFRESH_SECONDS, ViewSpec, parse_refresh_interval
 from fusion.ports.analytics_store import AnalyticsStore
 from fusion.ports.scheduler import ScheduledJob, Scheduler
 from fusion.ports.sql_policy import SqlValidator
@@ -47,6 +47,13 @@ class MaterializedViewService:
         if not is_valid_view_name(name):
             raise QueryError(f"Invalid view name: '{name}'. Use alphanumeric and underscore only.")
         self._validator.validate(sql)
+        interval = parse_refresh_interval(refresh)
+        if 0 < interval < MIN_REFRESH_SECONDS:
+            # Each refresh re-reads the view's tables from their source.
+            raise QueryError(
+                f"Refresh interval '{refresh}' is too short; the minimum is "
+                f"every {MIN_REFRESH_SECONDS} seconds."
+            )
 
         now = self._clock()
         spec = ViewSpec(
@@ -57,8 +64,10 @@ class MaterializedViewService:
         except QueryError as e:
             raise QueryError(f"Failed to create materialized view '{name}': {e}") from e
         self._views[name] = spec
+        replaced = self._jobs.pop(name, None)
+        if replaced is not None:
+            replaced.cancel()  # re-creating a view must not leave its old timer running
 
-        interval = parse_refresh_interval(refresh)
         if interval > 0:
             self._schedule(name, interval)
         elif refresh.lower().strip() != "manual":
@@ -70,6 +79,11 @@ class MaterializedViewService:
         # Load any source tables the view reads before creating it, so a view
         # can be defined before its tables were ever queried.
         plan = self._planner.plan_for_sql(spec.sql)
+        for ref in plan.targets:
+            # A view reads whole tables, so it answers to the whole-table limit.
+            refusal = "" if self._sources.is_loaded(ref) else self._planner.full_load_refusal(ref)
+            if refusal:
+                raise QueryError(f"A materialized view loads the tables it reads. {refusal}")
         if not plan.is_empty():
             self._sources.ensure_loaded(plan.targets)
         self._store.create_table_as(spec.table_name, spec.sql)
@@ -81,6 +95,9 @@ class MaterializedViewService:
     def refresh(self, name: str, force: bool = False) -> None:
         spec = self.get(name)
         try:
+            # Recomputing from the tables as they were loaded would return the
+            # same rows; a refresh starts by re-reading them.
+            self._sources.refresh_tables(self._planner.plan_for_sql(spec.sql).targets)
             self._materialize(spec)
         except QueryError as e:
             raise QueryError(f"Failed to refresh view '{name}': {e}") from e

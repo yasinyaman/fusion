@@ -5,7 +5,7 @@ DuckDB-powered in-memory analytics engine — LLM tool for data access via MCP, 
 ## Project Overview
 
 - **Language**: Python 3.12+ (CI: 3.12 / 3.13 / 3.14)
-- **Version**: 1.1.0 (smart transfer: slices, streaming ingest, semi-joins, incremental refresh)
+- **Version**: 1.2.0 (semantic layer: metric DSL, `list_metrics` / `query_metrics`)
 - **Core dependencies**: DuckDB 1.5+, pyarrow, requests, sqlglot 30 (pandas is an optional extra)
 - **Data source**: [Warp](https://github.com/yasinyaman/warp) REST API (PostgreSQL/MySQL)
 - **Tooling**: uv (`uv.lock` is committed), ruff, mypy 2, pytest 9
@@ -43,7 +43,7 @@ Dependency rule (enforced by `tests/architecture/test_dependency_rules.py`, whic
 | `fusion.application` | domain, ports, application | no |
 | `fusion.observability` | domain, application, observability | no |
 | `fusion.adapters.outbound.*` | domain, ports, outbound | duckdb, pyarrow, sqlglot, requests |
-| `fusion.adapters.inbound.*` | domain, ports, application, observability, inbound, `fusion.bootstrap`, `fusion` | fastapi, starlette, slowapi, pydantic, uvicorn, mcp, pandas |
+| `fusion.adapters.inbound.*` | domain, ports, application, observability, inbound, `fusion.bootstrap`, `fusion` | fastapi, starlette, slowapi (and its `limits`), pydantic, uvicorn, mcp, pandas |
 | `fusion.bootstrap`, `fusion.__init__` | anything | yes |
 
 ## File Structure
@@ -126,10 +126,10 @@ tests/
   columns, filters and grain exactly instead, and `FetchPlanner.plan_shape`
   slices from that. Compiled SQL is generated for DuckDB, runs through
   `run_local` (validated, never planned or rewritten), and is never pushed down.
-- **Tool results are capped at 100 rows**; result dict keys are `columns, rows, row_count, truncated, execution_time_ms, from_cache`.
+- **Tool results are capped at 100 rows**; result dict keys are `columns, rows, row_count, truncated, execution_time_ms, from_cache`. `query_data` reads only 101 rows, so `row_count` is the number returned, not the query's total; repeated column names come back as `id`, `id_2`.
 - **Identifiers from LLMs are regex-validated** and columns are checked against the catalog; `search_data` binds its value as a `?` parameter.
 - **Pushdown** happens only for single-source queries whose tables are all unloaded and reference no `mv_*` table; a failed pushdown falls back to local execution, and a Warp that refuses raw SQL (403) turns it off for that source.
-- **Slices never change a result.** Only table names are rewritten; the original WHERE and ON clauses stay, predicates are pushed only when they are an AND of literal comparisons on one table (never OR/NOT/functions/parameters, never the null side of an outer join), and `SliceSpec.subsumes` is conservative — an unprovable match refetches.
+- **Slices never change a result.** Only table names are rewritten; the original WHERE and ON clauses stay, predicates are pushed only when they are an AND of literal comparisons on one table (never OR/NOT/functions/parameters, never the null side of an outer join) and the literal is of the column's own kind (`predicate_is_pushable`); a LIMIT is pushed only when every WHERE condition was and there is no OFFSET; ANTI/SEMI/ASOF/USING/NATURAL joins are not sliced at all; and `SliceSpec.subsumes` is conservative — an unprovable match refetches. `tests/e2e/test_result_correctness.py` holds the cases that once got this wrong.
 - **A table is "loaded" only when all of it is in the store.** Partial slices live beside it in the registry; a slice cut short by the source is `complete=False` and never answers a narrower query.
 - **Refusals are actionable.** When a table is too big to load and the query gives nothing to narrow it by, `QueryError` names the table, its estimated size, the limit and the four ways forward.
 - **Materialized views are `mv_{name}` tables**; cross-source federation prefixes tables with the source name (`mydb.orders`).

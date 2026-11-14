@@ -32,6 +32,7 @@ class TestValidatorAllows:
             GROUP BY u.name HAVING COUNT(*) > 1 ORDER BY total DESC LIMIT 10
             """,
             "EXPLAIN SELECT 1",
+            "EXPLAIN ANALYZE SELECT 1",
             "SELECT COUNT(*) FROM orders WHERE amount > 100",
             "SELECT read_count FROM metrics",
             "SELECT * FROM logs WHERE message = 'tried read_csv( here'",
@@ -79,6 +80,12 @@ class TestValidatorBlocks:
         [
             "DROP TABLE users",
             "DELETE FROM orders WHERE 1=1",
+            # EXPLAIN ANALYZE executes the statement it explains.
+            "EXPLAIN ANALYZE DELETE FROM orders WHERE 1=1",
+            "explain  analyze\nDROP TABLE users",
+            "EXPLAIN UPDATE users SET name = 'hack'",
+            "EXPLAIN EXPLAIN ANALYZE CREATE TABLE x AS SELECT 1",
+            "/* c */ EXPLAIN ANALYZE DELETE FROM orders",
             "INSERT INTO users VALUES (1, 'hack')",
             "UPDATE users SET name = 'hack'",
             "ALTER TABLE users ADD COLUMN evil TEXT",

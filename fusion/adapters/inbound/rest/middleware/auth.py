@@ -20,9 +20,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
     the OpenAPI docs stay open.
     """
 
-    def __init__(self, app: ASGIApp, api_key: str = "") -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        api_key: str = "",
+        on_failure: Callable[[Request], bool] | None = None,
+    ) -> None:
         super().__init__(app)
         self._api_key = api_key
+        #: Called on every rejected key; True means "too many, answer 429".
+        self._on_failure = on_failure
 
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]
@@ -31,9 +38,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         provided = request.headers.get("X-API-Key")
+        # Constant-time comparison: no timing side channel on the key.
+        if provided and hmac.compare_digest(provided.encode(), self._api_key.encode()):
+            return await call_next(request)
+        if self._on_failure is not None and self._on_failure(request):
+            return JSONResponse(status_code=429, content={"error": "Too many failed API keys"})
         if not provided:
             return JSONResponse(status_code=401, content={"error": "Missing X-API-Key header"})
-        # Constant-time comparison: no timing side channel on the key.
-        if not hmac.compare_digest(provided.encode(), self._api_key.encode()):
-            return JSONResponse(status_code=403, content={"error": "Invalid API key"})
-        return await call_next(request)
+        return JSONResponse(status_code=403, content={"error": "Invalid API key"})

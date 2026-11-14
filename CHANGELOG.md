@@ -23,13 +23,85 @@ All notable changes to Fusion OLAP Engine.
   arm's form errors, and that seeding a model with a deterministic proposal
   beat every other arm with no hallucination at all
 
+### Security
+- **`EXPLAIN ANALYZE` executed what it explained.** `EXPLAIN ANALYZE DELETE ...`
+  passed the read-only guardrail and changed data. The statement under an
+  `EXPLAIN` now has to pass on its own.
+- **File reads with DuckDB external access on** (which in-memory backups need):
+  `FROM '/path/file.csv'`, a quoted `"read_csv"(...)` and a call hidden behind
+  an apostrophe in a comment all got through. The guardrail now also checks the
+  parsed tree, refuses SQL it cannot parse, and knows `read_xlsx`, `st_read`
+  and the `parquet_*` metadata functions.
+- `load_table` with an empty `where`, every column listed, or a filter that
+  keeps everything, and `create_view`, no longer get around the row budgets.
+- The rate limit can no longer be reset by sending a different made-up
+  `X-API-Key` each time, and failed key attempts are now limited too.
+- `FUSION_ENV` is trimmed and lower-cased, and an unknown value refuses to
+  start instead of running with authentication optional. Production requires
+  an API key of at least 16 characters.
+
 ### Fixed
+- **Queries that returned wrong rows without an error** on a table too big to
+  load whole: `ANTI JOIN` (fetched only the matching rows), `LIMIT ... OFFSET`
+  and `LIMIT` beside a condition the source cannot apply (the limit was read
+  at the source), a number compared to a text column or text to a number,
+  `IN` values containing a comma, and slice reuse that compared `'9'` and
+  `'10'` as text. `USING` and `NATURAL` joins no longer fail on a sliced table.
+  Also: slice reuse between `'2024-01-01T10:00'` and `'2024-01-01 12:00'`
+  (the separator decided the order), `LIMIT n PERCENT` read at the source as
+  `n` rows, two conditions with one column and operator (Warp's URL filters
+  kept only the last), semi-join keys sent to a column of another type, and
+  rows with a NULL key added again on every keyed incremental refresh.
+- **Semantic layer:** sequence transforms (`cumsum`, `lag`, `change`,
+  `time_shift`, ...) ran across every other dimension instead of within it;
+  two metrics that would share a column name silently returned one;
+  `is_null` with no value (or `null`) meant `IS NOT NULL`, and a non-boolean
+  value is now refused; `weighted_avg` counted the
+  weight of rows with no value.
+- Two concurrent first queries on the same table could leave it missing from
+  the store while the catalog called it loaded. Loads of one table now take
+  turns, and a waiting request reuses the finished load.
+- `refresh_view` recomputed from the tables as first loaded; it now re-reads
+  them. Incremental refresh with key columns catches a row changed within the
+  newest watermark value.
+- A semi-join cut short by the source's own export limit now refuses instead
+  of joining over the rows it was given.
+- Any `TIMESTAMP WITH TIME ZONE` value (`SELECT now()`) failed: `pytz` was
+  missing from the dependencies.
+- A failed raw query was re-sent to Warp three more times and, after five,
+  opened the circuit breaker for the whole source. POSTs are no longer
+  retried, and a 500 from the raw-query endpoint is the query's failure.
+- Unhandled errors on the REST API returned a bare 500 with no log line and
+  no `X-Request-ID`. A source that is down now answers 503 on every route,
+  and a tool (MCP included) says `Source unavailable: ...`; Warp's export and
+  paged reads no longer turn an outage into a query error.
+- `LEFT/RIGHT/FULL OUTER JOIN` (with the word `OUTER`) is sliced like
+  `LEFT JOIN` again.
+- A query on a table that is already loaded no longer waits for a reload of
+  that table to finish.
+- Two backups in the same second overwrote each other.
 - `query_metrics` raised `AttributeError` instead of a usable message when a
   caller passed `order_by` as a list, or `metrics`/`dimensions`/`filters` with
   the wrong type. Arguments arrive from a language model, so their *types* are
   as untrusted as their values; every one of these is now a `QueryError`
   naming the argument and showing the right shape. Found by the benchmark on
   its first real run.
+
+### Changed
+- `query_data` reads at most 101 rows, so `row_count` is the number of rows
+  returned (at most 100), no longer the query's total. Repeated column names
+  come back as `id`, `id_2`.
+- `FUSION_QUERY_TIMEOUT` (default 300 s, at most a week) interrupts a query
+  on the store, and building a materialized view.
+- A scheduled view refresh must be at least 30 seconds apart.
+- `Settings.validate()` checks numeric ranges and the rate-limit format
+  (every form slowapi reads); `fusion-mcp` runs it too, without the HTTP-only
+  checks. `FUSION_BACKUP_ENABLED`, `FUSION_DEBUG_ENDPOINTS` and the other
+  flags accept `1`, `yes` and `on`.
+- The benchmark's hallucination check counts a name hidden behind an alias of
+  the same name, reads `USING` columns, and falls back to words for SQL that
+  does not fully parse.
+- Unexpected errors from a tool no longer include the exception text.
 
 ## [1.2.0] - 2026-09-19
 

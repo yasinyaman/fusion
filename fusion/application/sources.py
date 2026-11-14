@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any
@@ -13,7 +14,7 @@ from fusion.domain.errors import ConnectionError, QueryError
 from fusion.domain.identifiers import IDENTIFIER_RE
 from fusion.domain.models import RefreshSpec, TableRef, TableSchema, coerce_ref
 from fusion.domain.policy import MaterializationPolicy, TargetPlan
-from fusion.domain.slices import LoadedSlice, Predicate, SliceSpec
+from fusion.domain.slices import LoadedSlice, Predicate, PredicateOp, SliceSpec
 from fusion.ports.analytics_store import AnalyticsStore
 from fusion.ports.data_source import DataSource, PushdownCapable, SourceFactory
 from fusion.ports.scheduler import ScheduledJob, Scheduler
@@ -56,6 +57,7 @@ class SourceService:
         self._on_data_changed = on_data_changed
         self._sources: dict[str, DataSource] = {}
         self._auto_refresh: ScheduledJob | None = None
+        self._load_locks: dict[str, threading.RLock] = {}
 
     # -- connections --------------------------------------------------------
 
@@ -149,10 +151,17 @@ class SourceService:
             newly.append(ref)
         return newly
 
+    def _load_lock(self, ref: TableRef) -> threading.RLock:
+        """One lock per source table: loads of it share a staging table name."""
+        return self._load_locks.setdefault(ref.full_name, threading.RLock())
+
     def _load(self, ref: TableRef, source: DataSource) -> None:
-        logger.info("On-demand loading: %s", ref)
-        loaded = self._materialize(ref, SliceSpec.FULL, source)
-        logger.info("On-demand load complete: %s (%d rows)", ref, loaded.row_count)
+        with self._load_lock(ref):
+            if self._catalog.is_loaded(ref):
+                return  # another request loaded it while this one waited
+            logger.info("On-demand loading: %s", ref)
+            loaded = self._materialize(ref, SliceSpec.FULL, source)
+            logger.info("On-demand load complete: %s (%d rows)", ref, loaded.row_count)
 
     # -- slices -------------------------------------------------------------
 
@@ -177,8 +186,23 @@ class SourceService:
 
     def _apply(self, target: TargetPlan, source: DataSource) -> str:
         if target.action == "reuse" and target.covering is not None:
+            # Nothing to fetch, so nothing to wait for: a reload of this table
+            # swaps its new copy in by rename, and the old one stays readable.
             self._catalog.touch_slice(target.covering.table_name, self._clock())
             return target.covering.table_name
+        lock = self._load_lock(target.ref)
+        waited = not lock.acquire(blocking=False)
+        if waited:
+            lock.acquire()
+        try:
+            if waited and target.action == "load_full" and self._catalog.is_loaded(target.ref):
+                # The request this one waited behind loaded the same table.
+                return target.ref.full_name
+            return self._apply_locked(target, source)
+        finally:
+            lock.release()
+
+    def _apply_locked(self, target: TargetPlan, source: DataSource) -> str:
         if target.action == "semi_join" and target.semi_join is not None:
             return self._semi_join(target, source)
         spec = SliceSpec.FULL if target.action == "load_full" else target.spec
@@ -200,6 +224,12 @@ class SourceService:
         The rename is what makes a reload atomic: queries either see the old
         table or the new one, never a half-written one.
         """
+        with self._load_lock(ref):
+            return self._materialize_locked(ref, spec, source, derived_from)
+
+    def _materialize_locked(
+        self, ref: TableRef, spec: SliceSpec, source: DataSource, derived_from: str | None
+    ) -> LoadedSlice:
         table_name = spec.table_name_for(ref)
         staging = f"{table_name}{STAGING_SUFFIX}"
         max_rows = self._max_ingest_rows or None
@@ -286,6 +316,9 @@ class SourceService:
             self._store.drop_table(loaded.table_name)
         self._catalog.mark_unloaded(table_ref)
 
+    def is_loaded(self, ref: TableRef | str) -> bool:
+        return self._catalog.is_loaded(ref)
+
     def table_stats(self) -> dict[str, int]:
         """Row counts for every catalog table (-1 when not loaded)."""
         stats: dict[str, int] = {}
@@ -330,17 +363,28 @@ class SourceService:
             ref = TableRef(name, table)
             if not self._catalog.is_loaded(ref):
                 continue
-            spec = self._refresh_specs.get(ref.full_name)
-            if spec is not None and spec.is_incremental:
-                counts[table] = self._refresh_incrementally(ref, source, spec)
-            else:
-                counts[table] = self._materialize(ref, SliceSpec.FULL, source).row_count
+            counts[table] = self._refresh_table(ref, source)
             changed = True
         changed |= self._drop_stale_slices(name)
         self._catalog.register_source(name, source.source_type, schema)
         for table, count in counts.items():
             schema[table].row_count = count
         return changed
+
+    def _refresh_table(self, ref: TableRef, source: DataSource) -> int:
+        """Bring one loaded table up to date; returns its row count."""
+        spec = self._refresh_specs.get(ref.full_name)
+        if spec is not None and spec.is_incremental:
+            return self._refresh_incrementally(ref, source, spec)
+        return self._materialize(ref, SliceSpec.FULL, source).row_count
+
+    def refresh_tables(self, refs: Iterable[TableRef | str]) -> None:
+        """Re-read the loaded tables among ``refs`` from their sources."""
+        for raw in refs:
+            ref = coerce_ref(raw)
+            source = self._sources.get(ref.source)
+            if source is not None and self._catalog.is_loaded(ref):
+                self._refresh_table(ref, source)
 
     def _drop_stale_slices(self, name: str) -> bool:
         """Discard slices a refresh cannot bring up to date."""
@@ -356,11 +400,20 @@ class SourceService:
 
     def _refresh_incrementally(self, ref: TableRef, source: DataSource, spec: RefreshSpec) -> int:
         """Fetch only rows above the highest watermark already in the store."""
+        with self._load_lock(ref):
+            return self._refresh_incrementally_locked(ref, source, spec)
+
+    def _refresh_incrementally_locked(
+        self, ref: TableRef, source: DataSource, spec: RefreshSpec
+    ) -> int:
         table_name = ref.full_name
         watermark = self._highest(table_name, spec.watermark_column)
         if watermark is None:
             return self._materialize(ref, SliceSpec.FULL, source).row_count
-        slice_spec = SliceSpec(predicates=(Predicate(spec.watermark_column, "gt", watermark),))
+        # With keys the upsert replaces by key, so re-reading the newest tick
+        # is free and catches rows changed inside it. Appending cannot.
+        op: PredicateOp = "gte" if spec.key_columns else "gt"
+        slice_spec = SliceSpec(predicates=(Predicate(spec.watermark_column, op, watermark),))
         stream = source.fetch_slice(ref.table, slice_spec, max_rows=self._max_ingest_rows or None)
         if spec.key_columns:
             # A row can be updated as well as added, so replace by key

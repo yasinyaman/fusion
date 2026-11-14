@@ -16,6 +16,7 @@ from fusion.adapters.outbound.warp.http import (
     HttpTransportError,
     WarpHttpClient,
     build_transport,
+    is_transport_failure,
 )
 from fusion.adapters.outbound.warp.streams import (
     ArrowRowStream,
@@ -284,7 +285,7 @@ class WarpSource:
                 columns = columns or batch.columns
                 records.extend(batch.rows)
         except ConnectionError as e:
-            raise QueryError(f"Failed to fetch data from {table}: {e}") from e
+            raise _read_error(f"Failed to fetch data from {table}: {e}", e) from e
         finally:
             stream.close()
         logger.info("Fetched %d rows from %s", len(records), table)
@@ -353,9 +354,9 @@ class WarpSource:
                 return None
             if e.status == 404:
                 raise QueryError(f"Failed to fetch data from {table}: {e}") from e
-            raise QueryError(f"Failed to export {table} from Warp: {e}") from e
+            raise _read_error(f"Failed to export {table} from Warp: {e}", e) from e
         except ConnectionError as e:
-            raise QueryError(f"Failed to export {table} from Warp: {e}") from e
+            raise _read_error(f"Failed to export {table} from Warp: {e}", e) from e
 
     def estimate_slice(self, table: str, spec: SliceSpec = SliceSpec.FULL) -> int | None:
         """How many rows the slice holds, from the list endpoint's ``total``."""
@@ -496,6 +497,15 @@ def extract_row_count(data: Any) -> int:
             if key in data and isinstance(data[key], int):
                 return data[key]
     return -1
+
+
+def _read_error(message: str, cause: BaseException) -> QueryError | ConnectionError:
+    """A read that failed because Warp is down stays a ConnectionError.
+
+    Callers answer that with "source unavailable" (REST 503); anything Warp
+    answered on purpose (4xx) is the request's fault and a QueryError.
+    """
+    return ConnectionError(message) if is_transport_failure(cause) else QueryError(message)
 
 
 def infer_column_type(values: Sequence[Any]) -> str:

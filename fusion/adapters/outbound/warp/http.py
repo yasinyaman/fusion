@@ -13,7 +13,7 @@ import requests
 
 from fusion.adapters.outbound.warp.circuit_breaker import CircuitBreaker
 from fusion.adapters.outbound.warp.connection_pool import ConnectionPool
-from fusion.domain.errors import ConnectionError
+from fusion.domain.errors import ConnectionError, QueryError
 from fusion.domain.slices import Predicate, SliceSpec
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,8 @@ MAX_GET_URL_LENGTH = 6000
 #: Long ``IN`` lists go in a POST body even when the URL would still fit.
 MAX_GET_IN_VALUES = 50
 
+RAW_QUERY_PATH = "/query/execute"
+
 # Cloud metadata hostnames that must never be contacted (SSRF targets).
 _BLOCKED_HOSTNAMES = frozenset({"metadata.google.internal", "metadata.goog"})
 
@@ -35,9 +37,10 @@ _BLOCKED_HOSTNAMES = frozenset({"metadata.google.internal", "metadata.goog"})
 class HttpTransportError(ConnectionError):
     """An HTTP request to Warp failed (network error or non-2xx status)."""
 
-    def __init__(self, message: str, status: int | None = None) -> None:
+    def __init__(self, message: str, status: int | None = None, url: str = "") -> None:
         super().__init__(message)
         self.status = status
+        self.url = url
 
 
 def is_transport_failure(exc: BaseException) -> bool:
@@ -49,6 +52,11 @@ def is_transport_failure(exc: BaseException) -> bool:
     """
     if isinstance(exc, HttpTransportError) and exc.status is not None:
         status = exc.status
+        if status == 500 and exc.url.endswith(RAW_QUERY_PATH):
+            # Warp answers 500 when the *database* rejects the SQL it was
+            # handed. That is the query's failure, and counting it would let
+            # five bad queries cut the source off for everyone.
+            return False
         return not (400 <= status < 500 and status not in (408, 429))
     return True
 
@@ -182,7 +190,9 @@ class PooledHttpTransport:
                 return do_request()
             except requests.HTTPError as e:
                 status = e.response.status_code if e.response is not None else None
-                raise HttpTransportError(f"HTTP {status} from {url}: {e}", status=status) from e
+                raise HttpTransportError(
+                    f"HTTP {status} from {url}: {e}", status=status, url=url
+                ) from e
             except requests.RequestException as e:
                 raise HttpTransportError(f"Request to {url} failed: {e}") from e
 
@@ -309,7 +319,7 @@ class WarpHttpClient:
         if params:
             payload["params"] = dict(params)
         return self._transport.post_json(
-            f"{self.api_root}/query/execute", payload, timeout=self.timeout
+            f"{self.api_root}{RAW_QUERY_PATH}", payload, timeout=self.timeout
         )
 
     def close(self) -> None:
@@ -321,18 +331,50 @@ def _normalize_prefix(prefix: str) -> str:
     return f"/{stripped}" if stripped else ""
 
 
+def _json_scalar(value: Any) -> Any:
+    """Join keys read back from the store may be Decimal, date or UUID."""
+    return value if value is None or isinstance(value, bool | int | float | str) else str(value)
+
+
 def _wire_value(predicate: Predicate) -> Any:
     """JSON representation of a predicate value (tuples are not JSON)."""
     if predicate.op == "in":
-        return list(predicate.value)
-    return predicate.value
+        return [_json_scalar(v) for v in predicate.value]
+    return _json_scalar(predicate.value)
+
+
+def _in_needs_body(predicate: Predicate) -> bool:
+    """Warp splits a query-string ``in`` on commas and trims each piece."""
+    return predicate.op == "in" and any(
+        isinstance(v, str) and ("," in v or v != v.strip()) for v in predicate.value
+    )
+
+
+def _repeats_a_key(predicates: Sequence[Predicate]) -> bool:
+    """Two predicates with one column and operator share one query parameter."""
+    keys = [(p.column, p.op) for p in predicates]
+    return len(set(keys)) != len(keys)
 
 
 def filter_params(predicates: Sequence[Predicate]) -> dict[str, str]:
     """Encode predicates as Warp's ``filter[column][op]=value`` query parameters."""
+    if _repeats_a_key(predicates):
+        # The second would overwrite the first, and the source would send rows
+        # that only meet one of them — fatal once a LIMIT is read there too.
+        raise QueryError(
+            "Cannot send two conditions with the same column and operator on this "
+            "Warp: its URL filters hold one value per column and operator. Enable "
+            "Warp's export endpoint."
+        )
     params: dict[str, str] = {}
     for predicate in predicates:
         key = f"filter[{predicate.column}][{predicate.op}]"
+        if _in_needs_body(predicate):
+            raise QueryError(
+                f"Cannot filter '{predicate.column}' by a value containing a comma or "
+                "outer spaces on this Warp: it reads such a list from the URL and "
+                "would split the value. Enable Warp's export endpoint."
+            )
         if predicate.op == "in":
             params[key] = ",".join(_scalar_text(v) for v in predicate.value)
         elif predicate.op == "is_null":
@@ -356,8 +398,12 @@ def _fits_in_url(
     limit: int | None,
 ) -> bool:
     """Whether this slice can be requested with a GET."""
+    if _repeats_a_key(spec.predicates):
+        return False
     for predicate in spec.predicates:
         if predicate.op == "in" and len(predicate.value) > MAX_GET_IN_VALUES:
+            return False
+        if _in_needs_body(predicate):
             return False
     params: dict[str, Any] = {"format": fmt}
     if fields:

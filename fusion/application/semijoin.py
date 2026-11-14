@@ -156,11 +156,22 @@ class SemiJoinExecutor:
                 )
                 stream = source.fetch_slice(ref.table, chunk_spec, max_rows=remaining)
                 if index == 0:
-                    total += self._store.materialize_stream(
+                    fetched = self._store.materialize_stream(
                         staging, stream, stream.schema or self._slice_schema(ref, spec)
                     )
                 else:
-                    total += self._store.append_stream(staging, stream)
+                    fetched = self._store.append_stream(staging, stream)
+                total += fetched
+                capped: int | None = getattr(stream, "row_limit", None)
+                source_capped = capped is not None and (remaining is None or capped < remaining)
+                if source_capped and capped is not None and fetched >= capped:
+                    # Same reasoning as _check_budget: a join over rows the
+                    # source held back is a wrong answer, not a slow one.
+                    raise QueryError(
+                        f"The source stopped at its own limit of {capped:,} rows while "
+                        f"fetching {ref.full_name} by join key, so the join would be "
+                        "incomplete. Add a WHERE condition, or raise the source's export limit."
+                    )
                 self._check_budget(ref, total, len(keys))
         except Exception:
             self._store.drop_table(staging)

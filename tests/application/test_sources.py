@@ -1,6 +1,7 @@
 """Tests for SourceService."""
 
 import json
+import threading
 from dataclasses import replace
 
 import pytest
@@ -66,6 +67,28 @@ class TestEnsureLoaded:
         assert app.catalog.is_loaded("db.users")
         assert app.store.count("db.users") == 5
         assert app.sources.ensure_loaded(["db.users"]) == []
+        assert len(factory.sources["db"].calls_named("fetch_slice")) == 1
+
+    def test_concurrent_first_queries_load_the_table_once(self, app, factory):
+        """Regression: racing loads shared one staging table and lost the table."""
+        rows = [{"id": i, "amount": i * 1.5} for i in range(20000)]
+        app.sources.connect("db", {"type": "fake", "tables": {"big": rows}})
+        errors: list[Exception] = []
+
+        def query() -> None:
+            try:
+                app.query.sql("SELECT COUNT(*) FROM db.big", use_cache=False)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=query) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []
+        assert app.store.count("db.big") == len(rows)
         assert len(factory.sources["db"].calls_named("fetch_slice")) == 1
 
     def test_unknown_source_is_skipped(self, app):
@@ -325,7 +348,7 @@ class TestIncrementalRefresh:
         app.sources.refresh_all()
         assert self._rows(app) == [(1, 100.0), (2, 50.0), (3, 7.0)]
         fetches = [c for c in factory.sources["db"].calls_named("fetch_slice") if c[1] == "orders"]
-        assert fetches[-1][2].predicates == (Predicate("updated_at", "gt", 20),)
+        assert fetches[-1][2].predicates == (Predicate("updated_at", "gte", 20),)
 
     def test_an_updated_row_replaces_its_old_copy(self, app, factory):
         factory.sources["db"].set_table(

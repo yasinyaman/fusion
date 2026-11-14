@@ -1,4 +1,4 @@
-"""Tests for ToolService (the 10 LLM tools)."""
+"""Tests for ToolService (the 12 LLM tools)."""
 
 import pytest
 
@@ -74,7 +74,8 @@ class TestQueryData:
 
     def test_query_data_truncates_at_100(self, tools):
         result = tools.query_data("SELECT * FROM range(250)")
-        assert result["row_count"] == 250
+        # The rows past the cap are never read, so their number is not known.
+        assert result["row_count"] == 100
         assert len(result["rows"]) == 100
         assert result["truncated"] is True
 

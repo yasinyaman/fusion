@@ -15,11 +15,17 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from fusion import __version__
 from fusion.adapters.inbound.rest.middleware import AuthMiddleware, StructuredLoggingMiddleware
-from fusion.adapters.inbound.rest.rate_limit import make_limiter
+from fusion.adapters.inbound.rest.rate_limit import failed_key_counter, make_limiter
 from fusion.adapters.inbound.rest.routes import register_routes
 from fusion.application.app import FusionApp
 from fusion.application.settings import Settings
-from fusion.domain.errors import BackupError, GuardrailViolation, QueryError, SchemaError
+from fusion.domain.errors import (
+    BackupError,
+    ConnectionError,
+    GuardrailViolation,
+    QueryError,
+    SchemaError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +64,13 @@ def create_app(fusion: FusionApp, settings: Settings | None = None) -> FastAPI:
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)  # type: ignore[arg-type]
 
     # add_middleware() wraps outward: the last one added runs first.
+    # The limiter sits outside auth so that guessing keys is rate limited too.
+    app.add_middleware(
+        AuthMiddleware,
+        api_key=settings.api_key,
+        on_failure=failed_key_counter(limiter, settings),
+    )
     app.add_middleware(SlowAPIMiddleware)
-    app.add_middleware(AuthMiddleware, api_key=settings.api_key)
     app.add_middleware(StructuredLoggingMiddleware)
     app.add_middleware(
         CORSMiddleware,
@@ -80,6 +91,11 @@ def create_app(fusion: FusionApp, settings: Settings | None = None) -> FastAPI:
     @app.exception_handler(SchemaError)
     async def schema_error_handler(request: Request, exc: SchemaError) -> JSONResponse:
         return JSONResponse(status_code=400, content={"error": str(exc)})
+
+    @app.exception_handler(ConnectionError)
+    async def connection_error_handler(request: Request, exc: ConnectionError) -> JSONResponse:
+        # A source that is down or cut off by its breaker: not the caller's fault.
+        return JSONResponse(status_code=503, content={"error": str(exc)})
 
     @app.exception_handler(BackupError)
     async def backup_error_handler(request: Request, exc: BackupError) -> JSONResponse:

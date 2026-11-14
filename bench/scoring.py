@@ -156,12 +156,76 @@ def identifiers_in(sql: str) -> set[str]:
     return found - SQL_KEYWORDS
 
 
+def referenced_names(sql: str) -> set[str] | None:
+    """The tables and columns a query reads, or None when it does not parse as one.
+
+    Read from the parsed statement, not from its words: a table alias
+    (``islemler i``), a CTE name, ``LIKE`` or ``strftime`` are not names the
+    schema could have, and counting them made a correct query look like an
+    invention. Aliases and CTEs the statement defines itself are left out —
+    but only where they are *used* as such: in ``SUM(amount) AS amount`` the
+    inner ``amount`` is still a column, and in ``WITH c AS (SELECT * FROM c)``
+    the inner ``c`` is still a table.
+
+    SQL that does not parse completely is None (the caller falls back to its
+    words): a tree cut short at a syntax error would hide every name after it.
+    """
+    import sqlglot
+    from sqlglot import exp
+
+    try:
+        tree = sqlglot.parse_one(sql, read="duckdb")
+    except Exception:
+        return None
+    if not isinstance(tree, exp.Query):
+        return None
+
+    ctes = {cte.alias.lower(): cte for cte in tree.find_all(exp.CTE) if cte.alias}
+    aliases = {alias.alias.lower() for alias in tree.find_all(exp.Alias) if alias.alias}
+
+    def inside(node: exp.Expr, ancestor: exp.Expr) -> bool:
+        parent = node.parent
+        while parent is not None:
+            if parent is ancestor:
+                return True
+            parent = parent.parent
+        return False
+
+    tables = set()
+    for table in tree.find_all(exp.Table):
+        name = table.name.lower()
+        cte = ctes.get(name)
+        if name and (cte is None or inside(table, cte)):
+            tables.add(name)
+
+    columns = set()
+    for column in tree.find_all(exp.Column):
+        name = column.name.lower()
+        if not name or name == "*":
+            continue
+        # An unqualified name outside any aliased expression may be the alias.
+        refers_to_alias = (
+            not column.table and name in aliases and column.find_ancestor(exp.Alias) is None
+        )
+        if not refers_to_alias:
+            columns.add(name)
+    for join in tree.find_all(exp.Join):
+        columns |= {key.name.lower() for key in join.args.get("using") or [] if key.name}
+    return tables | columns
+
+
 def hallucinated_identifiers(sql: str, known: Iterable[str]) -> set[str]:
     """Names the statement used that the schema does not have.
 
     Aliases the statement itself defines are subtracted first, so
     ``SUM(amount) AS revenue`` does not read as an invented column.
     """
+    # shortcut: names are checked against one flat list, so a real column used
+    # on the wrong table passes; check per table when the schema is passed as one.
+    referenced = referenced_names(sql)
+    if referenced is not None:
+        return referenced - {name.lower() for name in known}
+    # Not a query the parser can read: fall back to its words.
     text = _STRING_LITERAL.sub(" ", sql)
     alias = re.findall(r"\bas\s+([A-Za-z_][A-Za-z0-9_]*)", text, re.I)
     defined = {match.lower() for match in alias}

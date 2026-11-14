@@ -1,4 +1,4 @@
-"""Fusion demo — lazy loading, cross-source federation and the 10 LLM tools.
+"""Fusion demo — lazy loading, cross-source federation and the 12 LLM tools.
 
 Runs entirely in-process: synthetic pandas DataFrames stand in for three
 Warp databases through ``FrameSource``, a tiny DataSource adapter. Everything
@@ -211,7 +211,7 @@ def run_demo(scale: float = 1.0, quiet: bool = False) -> dict[str, Any]:
     facts: dict[str, Any] = {}
 
     say("=" * 70)
-    say("  Fusion demo — lazy loading, federation, 10 LLM tools")
+    say("  Fusion demo — lazy loading, federation, 12 LLM tools")
     say("=" * 70)
 
     say("\n[1/9] Generating synthetic data...")
@@ -285,7 +285,7 @@ def run_demo(scale: float = 1.0, quiet: bool = False) -> dict[str, Any]:
         say(result.to_markdown())
         facts["federation_rows"] = result.row_count
 
-        say("\n[7/9] Tools — the same 10 tools an LLM calls (MCP / OpenAI)...")
+        say("\n[7/9] Tools — the same 12 tools an LLM calls (MCP / OpenAI)...")
         say(f"  OpenAI tool defs: {len(get_openai_tools())}, MCP tool defs: {len(get_mcp_tools())}")
         agg = app.tools.execute(
             "aggregate_data",

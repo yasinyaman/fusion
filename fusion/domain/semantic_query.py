@@ -192,6 +192,13 @@ class SemanticQuery:
                 "dimensions=['order_date:month'], or use lag(...) to shift by "
                 "result rows instead of by calendar periods."
             )
+        names = self.output_columns()
+        repeated = sorted({name for name in names if names.count(name) > 1})
+        if repeated:
+            raise QueryError(
+                f"Two requested columns would both be called {', '.join(repeated)}, so "
+                "one would hide the other. Ask for them in separate queries."
+            )
         if not isinstance(self.limit, int) or isinstance(self.limit, bool) or self.limit < 1:
             raise QueryError(f"limit must be a positive whole number, got {self.limit!r}.")
         self.order_column()

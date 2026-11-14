@@ -1,4 +1,4 @@
-"""MCP server exposing the 10 Fusion tools (stdio transport via ``run``)."""
+"""MCP server exposing the 12 Fusion tools (stdio transport via ``run``)."""
 
 from __future__ import annotations
 

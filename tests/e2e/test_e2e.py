@@ -429,7 +429,8 @@ class TestIncrementalRefreshOverWarp:
             transport.db["events"].append({"id": 3, "kind": "c"})
             app.sources.refresh_all()
             exported = [p for m, u, p in transport.requests if u.endswith("/events/export")]
-            assert exported[-1]["filter[id][gt]"] == "2"
+            # gte: with a key the newest tick is re-read, so a row changed inside it is caught.
+            assert exported[-1]["filter[id][gte]"] == "2"
             result = app.query.sql("SELECT COUNT(*) AS n FROM ecommerce.events")
             assert result.rows == [(3,)] and result.from_cache is False
         finally:

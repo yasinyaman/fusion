@@ -67,6 +67,12 @@ def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = 
     )
     # stdout carries the MCP protocol; every log line must go to stderr.
     setup_logging(settings, stream=sys.stderr)
+    errors = settings.validate(http=False)
+    if errors:
+        for err in errors:
+            logger.error("Configuration error: %s", err)
+        logger.error("Refusing to start. Fix the above and retry.")
+        return 1
 
     fusion = build_app(settings)
     try:

@@ -303,8 +303,19 @@ def _predicate(raw: Mapping[str, Any]) -> Predicate:
     operator = cast(PredicateOp, op)
     if op != "is_null" and "value" not in raw:
         raise QueryError(f"Filter on '{column}' with op '{op}' needs a 'value'.")
+    value = raw.get("value")
+    if op == "is_null":
+        # No value, or null, asks the question the name asks. Anything but a
+        # real boolean is refused: bool("false") would mean IS NULL.
+        if value is None:
+            value = True
+        elif not isinstance(value, bool):
+            raise QueryError(
+                f"Filter on '{column}' with op 'is_null' takes true, false or no "
+                f"value, got {value!r}."
+            )
     try:
-        return Predicate(column=column, op=operator, value=raw.get("value"))
+        return Predicate(column=column, op=operator, value=value)
     except ValueError as e:
         raise QueryError(f"Invalid filter on '{column}': {e}") from e
 

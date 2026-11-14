@@ -52,6 +52,7 @@ def build_app(
             memory_limit=settings.memory_limit,
             external_access=settings.external_access,
             max_temp_directory_size=settings.max_temp_directory_size or None,
+            query_timeout=settings.query_timeout,
         )
     if cache is None:
         from fusion.adapters.outbound.memory_cache import MemoryQueryCache
@@ -105,6 +106,7 @@ def build_app(
         enabled=settings.backup_enabled,
         scheduler=scheduler,
         clock=clock,
+        on_restored=cache.clear,
     )
     semantic = SemanticService(catalog, query, semantic_compiler, settings.semantic_models())
     tools = ToolService(

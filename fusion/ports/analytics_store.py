@@ -93,7 +93,9 @@ class AnalyticsStore(Protocol):
 
     # -- querying -----------------------------------------------------------
 
-    def execute(self, sql: str, params: Sequence[Any] | None = None) -> RowSet:
+    def execute(
+        self, sql: str, params: Sequence[Any] | None = None, max_rows: int | None = None
+    ) -> RowSet:
         """Run ``sql`` (with optional ``?`` params); raises QueryError."""
         ...
 

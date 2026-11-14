@@ -48,7 +48,10 @@ class ConnectionPool:
             total=max_retries,
             backoff_factor=backoff_factor,
             status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            # Not POST: that is a raw query or a keyed export. Re-sending one
+            # that failed runs it again on the database, and one that timed
+            # out runs beside the copy still executing there.
+            allowed_methods=["HEAD", "GET", "OPTIONS"],
             # Return the last response instead of raising MaxRetryError so the
             # caller sees the real status code via raise_for_status().
             raise_on_status=False,

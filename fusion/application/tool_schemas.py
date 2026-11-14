@@ -1,7 +1,8 @@
 """Tool schema definitions in OpenAI function-calling and MCP formats.
 
-The 10 tools: list_sources, describe_table, query_data, search_data,
-aggregate_data, create_view, list_views, refresh_view, load_table, cache_stats.
+The 12 tools: list_sources, describe_table, query_data, search_data,
+aggregate_data, create_view, list_views, refresh_view, load_table, list_metrics,
+query_metrics, cache_stats.
 """
 
 from __future__ import annotations

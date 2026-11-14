@@ -94,7 +94,10 @@ def _aggregate_sql(expr: MetricExpr, query: SemanticQuery) -> str:
         weight_column = check_agg_args(agg, ref.args, ref.measure)["weight"]
         weight = f"{_quote(FACT_ALIAS)}.{_quote(weight_column)}"
         # NULLIF so a zero total weight is NULL rather than a division error.
-        return f"SUM({column} * {weight}) / NULLIF(SUM({weight}), 0)"
+        # A row with no value contributes nothing above, so its weight must
+        # not count below either.
+        counted = f"SUM(CASE WHEN {column} IS NOT NULL THEN {weight} END)"
+        return f"SUM({column} * {weight}) / NULLIF({counted}, 0)"
     return f"{agg}({column})"
 
 
@@ -207,17 +210,19 @@ class SqlglotSemanticCompiler:
         """The windowed expression for one transform over ``column``."""
         args = call.spec.bind(call.args)
         value = _quote(column)
-        order = self._order_expression(query, column)
+        # Every other dimension is its own series: without the partition a
+        # running total would carry on from one region into the next.
+        order = self._partition(query) + "ORDER BY " + self._order_expression(query, column)
 
         if call.name == "cumsum":
             frame = "ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW"
-            return f"SUM({value}) OVER (ORDER BY {order} {frame})"
+            return f"SUM({value}) OVER ({order} {frame})"
         if call.name in ("lag", "lead"):
-            return f"{call.name.upper()}({value}, {args['n']}) OVER (ORDER BY {order})"
+            return f"{call.name.upper()}({value}, {args['n']}) OVER ({order})"
         if call.name == "change":
-            return f"{value} - LAG({value}, {args['n']}) OVER (ORDER BY {order})"
+            return f"{value} - LAG({value}, {args['n']}) OVER ({order})"
         if call.name == "change_pct":
-            lag = f"LAG({value}, {args['n']}) OVER (ORDER BY {order})"
+            lag = f"LAG({value}, {args['n']}) OVER ({order})"
             # NULLIF so a zero base reads as "no answer" rather than raising.
             return f"({value} - {lag}) / NULLIF({lag}, 0)"
         if call.name == "time_shift":
@@ -234,14 +239,21 @@ class SqlglotSemanticCompiler:
             # calendar period, and NULL when the period has no row. LAG would
             # answer with whatever the previous row happens to be.
             return (
-                f"LAST_VALUE({value}) OVER "
-                f"(ORDER BY {_quote(time_dimension.output_name())} {frame})"
+                f"LAST_VALUE({value}) OVER ({self._partition(query)}"
+                f"ORDER BY {_quote(time_dimension.output_name())} {frame})"
             )
         if call.name in ("rank", "dense_rank", "percent_rank"):
             return f"{call.name.upper()}() OVER (ORDER BY {value} DESC)"
         if call.name == "ntile":
             return f"NTILE({args['buckets']}) OVER (ORDER BY {value} DESC)"
         raise QueryError(f"Transform '{call.name}' has no compiler.")  # pragma: no cover
+
+    @staticmethod
+    def _partition(query: SemanticQuery) -> str:
+        """``PARTITION BY`` every dimension a sequence window does not order by."""
+        ordered_by = query.time_dimension() or (query.dimensions[0] if query.dimensions else None)
+        others = [_quote(d.output_name()) for d in query.dimensions if d is not ordered_by]
+        return f"PARTITION BY {', '.join(others)} " if others else ""
 
     @staticmethod
     def _order_expression(query: SemanticQuery, fallback_column: str) -> str:

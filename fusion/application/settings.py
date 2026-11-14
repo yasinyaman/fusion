@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -34,8 +35,27 @@ PLACEHOLDER_API_KEYS = frozenset(
 )
 
 
+KNOWN_ENVS = frozenset({"development", "test", "staging", "production", "prod"})
+
+
 def _bool(value: str) -> bool:
-    return value.strip().lower() == "true"
+    return value.strip().lower() in ("true", "1", "yes", "on")
+
+
+#: One rate as slowapi's ``limits`` reads it: ``100/minute``, ``10 per 5 minutes``,
+#: ``1000/month``. ASCII digits only: ``\d`` would admit digits ``limits`` refuses.
+_RATE_LIMIT_RE = re.compile(
+    r"[1-9][0-9]*\s*(/|per)\s*([1-9][0-9]*\s*)?(second|minute|hour|day|month|year)s?",
+    re.IGNORECASE | re.ASCII,
+)
+#: How ``limits`` separates several rates.
+_RATE_SEPARATORS = re.compile(r"[,;|]")
+
+#: Shortest API key production accepts.
+MIN_API_KEY_LENGTH = 16
+
+#: Longest FUSION_QUERY_TIMEOUT: a week, far below what a timer can hold.
+MAX_QUERY_TIMEOUT = 7 * 86400
 
 
 def _csv(value: str) -> tuple[str, ...]:
@@ -93,6 +113,8 @@ class Settings:
 
     # Cache
     cache_ttl: int = 300
+    #: Seconds a query may run on the store before it is interrupted (0 = no limit).
+    query_timeout: float = 300.0
     cache_max_entries: int = 500
 
     # Security
@@ -128,7 +150,7 @@ class Settings:
         env = os.environ if environ is None else environ
         get = env.get
         return cls(
-            env=get("FUSION_ENV", "development"),
+            env=get("FUSION_ENV", "development").strip().lower(),
             host=get("FUSION_HOST", "0.0.0.0"),
             port=int(get("FUSION_PORT", "9000")),
             warp_url=get("WARP_URL", "http://localhost:8000"),
@@ -152,6 +174,7 @@ class Settings:
             refresh_config=get("FUSION_REFRESH_CONFIG", ""),
             semantic_model=get("FUSION_SEMANTIC_MODEL", ""),
             cache_ttl=int(get("FUSION_CACHE_TTL", "300")),
+            query_timeout=float(get("FUSION_QUERY_TIMEOUT", "300")),
             cache_max_entries=int(get("FUSION_CACHE_MAX_ENTRIES", "500")),
             api_key=get("FUSION_API_KEY", ""),
             cors_origins=_csv(get("FUSION_CORS_ORIGINS", "http://localhost:3000")),
@@ -173,7 +196,7 @@ class Settings:
     # -- derived flags ------------------------------------------------------
 
     def is_production(self) -> bool:
-        return self.env == "production"
+        return self.env in ("production", "prod")
 
     def is_development(self) -> bool:
         return self.env == "development"
@@ -184,7 +207,7 @@ class Settings:
     def debug_endpoints_enabled(self) -> bool:
         """Admin/debug endpoints: off in production unless explicitly enabled."""
         if self.debug_endpoints:
-            return self.debug_endpoints.lower() == "true"
+            return _bool(self.debug_endpoints)
         return not self.is_production()
 
     def policy(self) -> MaterializationPolicy:
@@ -261,15 +284,55 @@ class Settings:
             "circuit_breaker_timeout": self.circuit_breaker_timeout,
         }
 
-    def validate(self) -> list[str]:
+    def _range_errors(self) -> list[str]:
+        """Values that would crash later, far from the setting that caused it."""
+        errors = [
+            f"{name}={getattr(self, name)!r} must be at least {minimum:g}."
+            for name, minimum in _AT_LEAST
+            # ``not >=`` rather than ``<`` so that NaN fails too.
+            if not getattr(self, name) >= minimum
+        ]
+        if self.port > 65535:
+            errors.append(f"port={self.port} is not a TCP port.")
+        if not (0 < self.warp_timeout < float("inf")):
+            errors.append(f"warp_timeout={self.warp_timeout!r} must be a positive number.")
+        if not self.circuit_breaker_timeout > 0:
+            # The breaker refuses 0 itself, but only once a source connects.
+            errors.append(
+                f"circuit_breaker_timeout={self.circuit_breaker_timeout!r} must be above 0."
+            )
+        if not self.query_timeout <= MAX_QUERY_TIMEOUT:
+            # A timer that long cannot be started; 0 is how to ask for no limit.
+            errors.append(
+                f"query_timeout={self.query_timeout!r} is over {MAX_QUERY_TIMEOUT:g} seconds; "
+                "use 0 for no limit."
+            )
+        return errors
+
+    def validate(self, http: bool = True) -> list[str]:
         """Fatal misconfigurations for the current environment (empty = OK).
 
         Production must have a real API key (auth would otherwise be silently
-        disabled) and must not allow every CORS origin.
+        disabled) and must not allow every CORS origin. ``http=False`` (the
+        MCP server over stdio) skips what only an HTTP server uses: the API
+        key, CORS and the rate limit.
         """
         errors: list[str] = []
+        if self.env not in KNOWN_ENVS:
+            # A typo here would otherwise start the server with auth optional.
+            errors.append(f"FUSION_ENV='{self.env}' is not one of {', '.join(sorted(KNOWN_ENVS))}.")
+        errors.extend(self._range_errors())
+        if not http:
+            return errors
+        limits = [part.strip() for part in _RATE_SEPARATORS.split(self.rate_limit)]
+        if not all(_RATE_LIMIT_RE.fullmatch(part) for part in limits):
+            errors.append(f"FUSION_RATE_LIMIT='{self.rate_limit}' is not a rate like '100/minute'.")
         if self.is_production():
-            if self.api_key.strip() in PLACEHOLDER_API_KEYS:
+            if 0 < len(self.api_key.strip()) < MIN_API_KEY_LENGTH:
+                errors.append(
+                    f"FUSION_API_KEY is shorter than {MIN_API_KEY_LENGTH} characters in production."
+                )
+            if self.api_key.strip().lower() in PLACEHOLDER_API_KEYS:
                 errors.append(
                     "FUSION_API_KEY is empty or a placeholder in production. "
                     "Set a strong, unique API key (authentication would otherwise "
@@ -281,6 +344,31 @@ class Settings:
                     "Specify explicit allowed origins."
                 )
         return errors
+
+
+_AT_LEAST: tuple[tuple[str, float], ...] = (
+    ("port", 1),
+    ("threads", 1),
+    ("cache_max_entries", 1),
+    ("cache_ttl", 0),
+    ("query_timeout", 0),
+    ("in_chunk_size", 1),
+    ("pool_size", 1),
+    ("pool_max_overflow", 0),
+    ("warp_max_retries", 0),
+    ("warp_backoff_factor", 0),
+    ("circuit_breaker_threshold", 1),
+    ("circuit_breaker_timeout", 0),
+    ("max_ingest_rows", 0),
+    ("full_load_max_rows", 0),
+    ("slice_max_rows", 0),
+    ("slice_budget_rows", 0),
+    ("semi_join_max_keys", 0),
+    # A scheduler handed 0 runs the job back to back.
+    ("backup_interval", 60),
+    # 0 would delete each backup as soon as it is written.
+    ("backup_retention_days", 1),
+)
 
 
 def refresh_spec_from(raw: Any) -> RefreshSpec | None:

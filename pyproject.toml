@@ -18,6 +18,8 @@ classifiers = [
 dependencies = [
     "duckdb>=1.5,<2",
     "pyarrow>=25.0.1,<26",
+    # DuckDB imports it to hand back TIMESTAMP WITH TIME ZONE values.
+    "pytz>=2024.1",
     "requests>=2.34,<3",
     "sqlglot>=30.0,<31",
 ]
