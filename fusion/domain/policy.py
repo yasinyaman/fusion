@@ -164,8 +164,9 @@ def refusal_message(
         f"Refusing to load {ref.full_name} ({size}): it exceeds "
         f"full_load_max_rows={policy.full_load_max_rows:,}.",
         "Try one of:",
-        f"  1. add a WHERE condition on {ref.table} columns "
-        "(=, !=, <, <=, >, >=, LIKE, IN, IS NULL against a literal)",
+        f"  1. add a WHERE condition on {ref.table} columns against a literal: "
+        "=, !=, <, <=, >, >=, IN, IS NULL on numbers and dates; =, IN, LIKE, "
+        "IS NULL on text (the source's collation decides text != and ranges)",
         "  2. select only the columns you need instead of *",
         "  3. join it to a smaller table on an equality key, so only the matching rows are fetched",
         f"  4. load a slice explicitly: load_table('{ref.full_name}', where='...', columns=[...])",
@@ -176,6 +177,26 @@ def refusal_message(
         "bigger loads if the machine has the memory."
     )
     return "\n".join(lines)
+
+
+def view_refusal_message(ref: TableRef, estimate: int | None, policy: MaterializationPolicy) -> str:
+    """Why a materialized view may not read ``ref``, and what works instead.
+
+    A view reads whole tables, so the ways around a query's refusal (a WHERE,
+    fewer columns, a join, a slice) do not help it: only these do.
+    """
+    size = f"{estimate:,} rows estimated" if estimate is not None else "size unknown"
+    return "\n".join(
+        [
+            f"A materialized view loads the tables it reads whole, and {ref.full_name} "
+            f"({size}) exceeds full_load_max_rows={policy.full_load_max_rows:,}.",
+            "Try one of:",
+            "  1. run the same SELECT with query_data: a query can read just the "
+            "slice it needs, a view cannot",
+            "  2. build the view on a smaller table (an aggregate or extract kept at the source)",
+            "  3. raise FUSION_FULL_LOAD_MAX_ROWS if the machine has the memory",
+        ]
+    )
 
 
 def budget_message(needed: int, policy: MaterializationPolicy) -> str:

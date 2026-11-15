@@ -11,8 +11,10 @@ import logging
 import re
 import shutil
 import threading
+import time
 import uuid
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -35,14 +37,20 @@ logger = logging.getLogger(__name__)
 
 _SIZE_RE = re.compile(r"^\d+(\.\d+)?\s*(B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)?$", re.IGNORECASE)
 
+#: Source type name -> the column type the store creates. Integers keep the
+#: width the source declared: widening ``smallint`` to ``BIGINT`` turns
+#: ``date_col + smallint_col``, valid at the source, into a binder error here.
 _SQL_TYPES = {
-    "integer": "BIGINT",
-    "int": "BIGINT",
-    "int2": "BIGINT",
-    "int4": "BIGINT",
+    "integer": "INTEGER",
+    "int": "INTEGER",
+    "int2": "SMALLINT",
+    "int4": "INTEGER",
     "int8": "BIGINT",
-    "smallint": "BIGINT",
+    "smallint": "SMALLINT",
+    "tinyint": "SMALLINT",
     "bigint": "BIGINT",
+    "ubigint": "UBIGINT",
+    "hugeint": "HUGEINT",
     "double": "DOUBLE",
     "double precision": "DOUBLE",
     "float": "DOUBLE",
@@ -61,7 +69,13 @@ _SQL_TYPES = {
     "bytes": "BLOB",
     "bytea": "BLOB",
     "json": "JSON",
+    "uuid": "UUID",
 }
+
+#: ``decimal(12,2)`` / ``numeric(12, 2)`` / ``numeric(12)``.
+_DECIMAL_TYPE = re.compile(r"(?:decimal|numeric)\s*\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?\)")
+#: A length or precision argument: ``varchar(255)``, ``timestamp(6) with time zone``.
+_TYPE_ARGUMENTS = re.compile(r"\s*\([^)]*\)")
 
 
 def _quote(identifier: str) -> str:
@@ -82,6 +96,60 @@ def _check_size(value: str, label: str) -> str:
     return value.strip()
 
 
+class _Watchdog:
+    """One long-lived thread that interrupts a statement past its deadline.
+
+    ``arm`` and ``disarm`` bracket each statement (the store lock means there
+    is at most one); the thread sleeps until the deadline or a change. It
+    starts on the first ``arm``, so a store with no timeout never has one.
+    """
+
+    def __init__(self, interrupt: Callable[[], None]) -> None:
+        self._interrupt = interrupt
+        self._cond = threading.Condition()
+        self._deadline: float | None = None
+        self._stopped = False
+        self._thread: threading.Thread | None = None
+
+    def arm(self, seconds: float) -> None:
+        with self._cond:
+            if self._thread is None:
+                self._thread = threading.Thread(
+                    target=self._run, name="duckdb-watchdog", daemon=True
+                )
+                self._thread.start()
+            self._deadline = time.monotonic() + seconds
+            self._cond.notify()
+
+    def disarm(self) -> None:
+        with self._cond:
+            self._deadline = None
+            self._cond.notify()
+
+    def stop(self) -> None:
+        with self._cond:
+            self._stopped = True
+            self._cond.notify()
+        if self._thread is not None:
+            self._thread.join(timeout=1)
+
+    def _run(self) -> None:
+        with self._cond:
+            while not self._stopped:
+                if self._deadline is None:
+                    self._cond.wait()
+                    continue
+                remaining = self._deadline - time.monotonic()
+                if remaining > 0:
+                    self._cond.wait(remaining)
+                    continue
+                self._deadline = None
+                try:
+                    self._interrupt()
+                except Exception:  # pragma: no cover - a closed connection
+                    logger.debug("Watchdog interrupt failed", exc_info=True)
+
+
 class DuckDBStore:
     """AnalyticsStore backed by an in-memory or file-based DuckDB database."""
 
@@ -92,7 +160,13 @@ class DuckDBStore:
         memory_limit: str = "4GB",
         external_access: bool = False,
         max_temp_directory_size: str | None = None,
+        query_timeout: float = 0,
+        timezone: str = "UTC",
     ) -> None:
+        self._query_timeout = query_timeout
+        if not re.fullmatch(r"[A-Za-z0-9_/+\-]+", timezone):
+            raise ValueError(f"Invalid time zone name: {timezone!r}")
+        self._timezone = timezone
         self._database = database or ":memory:"
         self._threads = int(threads)
         self._memory_limit = _check_size(memory_limit, "memory_limit")
@@ -104,6 +178,8 @@ class DuckDBStore:
         )
         self._lock = threading.Lock()
         self._conn = self._open()
+        # One thread for every statement's deadline, rather than one per statement.
+        self._watchdog = _Watchdog(lambda: self._conn.interrupt())
         logger.info(
             "DuckDBStore opened (db=%s, threads=%d, memory=%s, external_access=%s)",
             self._database,
@@ -123,6 +199,9 @@ class DuckDBStore:
         conn = duckdb.connect(self._database)
         conn.execute(f"SET threads TO {self._threads}")
         conn.execute(f"SET memory_limit = '{self._memory_limit}'")
+        # Text is read as a timestamp in this zone, here and at the source in
+        # its session zone; the two must agree for pushed conditions to.
+        conn.execute(f"SET TimeZone = '{self._timezone}'")
         if self._max_temp_directory_size:
             conn.execute(f"SET max_temp_directory_size = '{self._max_temp_directory_size}'")
         if not self._external_access:
@@ -139,7 +218,14 @@ class DuckDBStore:
         return self._external_access
 
     def close(self) -> None:
+        # Stop a statement still running, rather than wait for it unbounded:
+        # its own deadline goes with the watchdog.
+        try:
+            self._conn.interrupt()
+        except Exception:  # pragma: no cover - already closed
+            pass
         with self._lock:
+            self._watchdog.stop()
             self._conn.close()
         logger.info("DuckDBStore closed")
 
@@ -275,6 +361,10 @@ class DuckDBStore:
         # Stage with the target's own columns, so an empty batch still lands
         # as a table the delete/insert below can talk about.
         schema = TableSchema(columns=self.describe(table_name))
+        # Case-insensitive, as DuckDB resolves identifiers (quoted ones too).
+        missing = [k for k in keys if k.lower() not in {c.name.lower() for c in schema.columns}]
+        if missing:
+            raise QueryError(f"Upsert into {table_name}: no key column {', '.join(missing)}")
         count = self.materialize_stream(staging, stream, schema)
         if count == 0:
             self.drop_table(staging)
@@ -284,7 +374,29 @@ class DuckDBStore:
         try:
             with self._lock:
                 try:
-                    match = " AND ".join(f"t.{_quote(k)} = s.{_quote(k)}" for k in keys)
+                    # When the target already holds every staged row as it is, there
+                    # is nothing to replace: a refresh that re-reads the newest
+                    # tick and finds it unchanged writes nothing. EXCEPT ALL
+                    # compares whole rows, NULLs included.
+                    match = " AND ".join(
+                        f"t.{_quote(k)} IS NOT DISTINCT FROM s.{_quote(k)}" for k in keys
+                    )
+                    # Nothing to do only when the target's rows for these keys
+                    # are exactly the staged ones: every staged row is there,
+                    # and no other row shares a key with them.
+                    unchanged = self._conn.execute(
+                        f"SELECT (SELECT count(*) FROM (SELECT * FROM {stage} "
+                        f"EXCEPT ALL SELECT * FROM {target})) = 0 AND "
+                        f"(SELECT count(*) FROM {target} AS t WHERE EXISTS "
+                        f"(SELECT 1 FROM {stage} AS s WHERE {match})) = {count}"
+                    ).fetchone()
+                    if unchanged is not None and unchanged[0]:
+                        return 0
+                    # IS NOT DISTINCT FROM: a NULL key is a key too, or a row
+                    # re-read at the newest watermark would be inserted again.
+                    match = " AND ".join(
+                        f"t.{_quote(k)} IS NOT DISTINCT FROM s.{_quote(k)}" for k in keys
+                    )
                     self._conn.execute(
                         f"DELETE FROM {target} AS t "
                         f"WHERE EXISTS (SELECT 1 FROM {stage} AS s WHERE {match})"
@@ -364,11 +476,17 @@ class DuckDBStore:
             raise QueryError(
                 f"create_table_as is reserved for materialized views (mv_*): '{table_name}'"
             )
-        with self._lock:
+        # The SELECT is the caller's, so it answers to the same timeout as a query.
+        with self._lock, self._deadline():
             try:
                 self._conn.execute(
                     f"CREATE OR REPLACE TABLE {_quote(table_name)} AS ({select_sql})"
                 )
+            except duckdb.InterruptException:
+                raise QueryError(
+                    f"Building '{table_name}' stopped after {self._query_timeout:g}s "
+                    "(FUSION_QUERY_TIMEOUT). Narrow the view's query."
+                ) from None
             except duckdb.Error as e:
                 raise QueryError(f"Failed to create table '{table_name}': {e}") from e
 
@@ -378,8 +496,10 @@ class DuckDBStore:
 
     # -- querying -----------------------------------------------------------
 
-    def execute(self, sql: str, params: Sequence[Any] | None = None) -> RowSet:
-        with self._lock:
+    def execute(
+        self, sql: str, params: Sequence[Any] | None = None, max_rows: int | None = None
+    ) -> RowSet:
+        with self._lock, self._deadline():
             try:
                 cursor = (
                     self._conn.execute(sql, list(params))
@@ -389,10 +509,31 @@ class DuckDBStore:
                 if cursor.description is None:
                     return RowSet.empty()
                 columns = tuple(desc[0] for desc in cursor.description)
-                rows = cursor.fetchall()
+                # fetchmany streams: the rows past the cap are never built.
+                rows = cursor.fetchall() if max_rows is None else cursor.fetchmany(max_rows)
+            except duckdb.InterruptException:
+                raise QueryError(
+                    f"Query stopped after {self._query_timeout:g}s (FUSION_QUERY_TIMEOUT). "
+                    "Narrow it, or filter the tables it reads down first."
+                ) from None
             except duckdb.Error as e:
                 raise QueryError(f"Query execution failed: {e}") from e
         return RowSet(columns=columns, rows=rows)
+
+    @contextmanager
+    def _deadline(self) -> Iterator[None]:
+        """Interrupt the running statement once the query timeout passes.
+
+        Entered with the lock held, so the statement interrupted is this one.
+        """
+        if self._query_timeout <= 0:
+            yield
+            return
+        self._watchdog.arm(self._query_timeout)
+        try:
+            yield
+        finally:
+            self._watchdog.disarm()
 
     def describe(self, table_name: str) -> list[ColumnInfo]:
         escaped = table_name.replace("'", "''")
@@ -474,7 +615,23 @@ def _validate_plain_identifier(name: str, label: str) -> None:
 
 
 def _sql_type(type_name: str) -> str:
-    return _SQL_TYPES.get(type_name.lower(), "VARCHAR")
+    """The store's column type for a source type name; VARCHAR when unknown.
+
+    A decimal keeps its precision and scale. Any other argument (a length, a
+    fractional-seconds precision) is dropped before the lookup, so
+    ``varchar(255)`` is VARCHAR and ``timestamp(6) with time zone`` TIMESTAMPTZ.
+    """
+    name = type_name.strip().lower()
+    known = _SQL_TYPES.get(name)
+    if known is not None:
+        return known
+    decimal = _DECIMAL_TYPE.fullmatch(name)
+    if decimal:
+        precision, scale = int(decimal.group(1)), int(decimal.group(2) or 0)
+        if 0 < precision <= 38 and scale <= precision:
+            return f"DECIMAL({precision},{scale})"
+        return "DOUBLE"
+    return _SQL_TYPES.get(" ".join(_TYPE_ARGUMENTS.sub("", name).split()), "VARCHAR")
 
 
 def _rowset_to_arrow(rows: RowSet) -> pa.Table:

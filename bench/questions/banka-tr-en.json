@@ -1,0 +1,611 @@
+{
+  "name": "banka-tr-en",
+  "schema_sql": "CREATE TABLE musteriler (\n  musteri_id      NUMBER PRIMARY KEY,\n  ad_soyad        VARCHAR2(120) NOT NULL,\n  eposta          VARCHAR2(160),\n  sube_kodu       VARCHAR2(10) NOT NULL,\n  segment         VARCHAR2(20) NOT NULL,\n  acilis_tarihi   DATE NOT NULL\n);\nCREATE TABLE islemler (\n  islem_id        NUMBER PRIMARY KEY,\n  musteri_id      NUMBER NOT NULL REFERENCES musteriler (musteri_id),\n  tutar           NUMBER(14,2) NOT NULL,\n  para_birimi     VARCHAR2(3) NOT NULL,\n  islem_turu      VARCHAR2(20) NOT NULL,\n  durum           VARCHAR2(20) NOT NULL,\n  islem_tarihi    DATE NOT NULL,\n  kanal           VARCHAR2(20) NOT NULL\n);",
+  "identifiers": [
+    "musteriler",
+    "musteri_id",
+    "ad_soyad",
+    "eposta",
+    "sube_kodu",
+    "segment",
+    "acilis_tarihi",
+    "islemler",
+    "islem_id",
+    "tutar",
+    "para_birimi",
+    "islem_turu",
+    "durum",
+    "islem_tarihi",
+    "kanal"
+  ],
+  "questions": [
+    {
+      "id": "q01-tr",
+      "text": "Toplam işlem tutarı nedir?",
+      "lang": "tr",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT SUM(tutar) FROM islemler",
+        "mssql": "SELECT SUM(tutar) FROM islemler",
+        "duckdb": "SELECT SUM(tutar) FROM islemler"
+      },
+      "tags": [
+        "aggregate"
+      ]
+    },
+    {
+      "id": "q01-en",
+      "text": "What is the total transaction amount?",
+      "lang": "en",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT SUM(tutar) FROM islemler",
+        "mssql": "SELECT SUM(tutar) FROM islemler",
+        "duckdb": "SELECT SUM(tutar) FROM islemler"
+      },
+      "tags": [
+        "aggregate"
+      ]
+    },
+    {
+      "id": "q02-tr",
+      "text": "Başarılı işlemlerin toplam tutarı nedir?",
+      "lang": "tr",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT SUM(tutar) FROM islemler WHERE durum = 'basarili'",
+        "mssql": "SELECT SUM(tutar) FROM islemler WHERE durum = 'basarili'",
+        "duckdb": "SELECT SUM(tutar) FROM islemler WHERE durum = 'basarili'"
+      },
+      "tags": [
+        "aggregate",
+        "filter"
+      ]
+    },
+    {
+      "id": "q02-en",
+      "text": "What is the total amount of successful transactions?",
+      "lang": "en",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT SUM(tutar) FROM islemler WHERE durum = 'basarili'",
+        "mssql": "SELECT SUM(tutar) FROM islemler WHERE durum = 'basarili'",
+        "duckdb": "SELECT SUM(tutar) FROM islemler WHERE durum = 'basarili'"
+      },
+      "tags": [
+        "aggregate",
+        "filter"
+      ]
+    },
+    {
+      "id": "q03-tr",
+      "text": "Kaç müşteri var?",
+      "lang": "tr",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT COUNT(*) FROM musteriler",
+        "mssql": "SELECT COUNT(*) FROM musteriler",
+        "duckdb": "SELECT COUNT(*) FROM musteriler"
+      },
+      "tags": [
+        "aggregate"
+      ]
+    },
+    {
+      "id": "q03-en",
+      "text": "How many customers are there?",
+      "lang": "en",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT COUNT(*) FROM musteriler",
+        "mssql": "SELECT COUNT(*) FROM musteriler",
+        "duckdb": "SELECT COUNT(*) FROM musteriler"
+      },
+      "tags": [
+        "aggregate"
+      ]
+    },
+    {
+      "id": "q04-tr",
+      "text": "Segment bazında işlem sayısı nedir?",
+      "lang": "tr",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT m.segment, COUNT(*) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id GROUP BY m.segment",
+        "mssql": "SELECT m.segment, COUNT(*) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id GROUP BY m.segment",
+        "duckdb": "SELECT m.segment, COUNT(*) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id GROUP BY m.segment"
+      },
+      "tags": [
+        "join",
+        "group"
+      ]
+    },
+    {
+      "id": "q04-en",
+      "text": "How many transactions are there per customer segment?",
+      "lang": "en",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT m.segment, COUNT(*) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id GROUP BY m.segment",
+        "mssql": "SELECT m.segment, COUNT(*) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id GROUP BY m.segment",
+        "duckdb": "SELECT m.segment, COUNT(*) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id GROUP BY m.segment"
+      },
+      "tags": [
+        "join",
+        "group"
+      ]
+    },
+    {
+      "id": "q05-tr",
+      "text": "Kanal bazında ortalama işlem tutarı nedir?",
+      "lang": "tr",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT kanal, AVG(tutar) FROM islemler GROUP BY kanal",
+        "mssql": "SELECT kanal, AVG(tutar) FROM islemler GROUP BY kanal",
+        "duckdb": "SELECT kanal, AVG(tutar) FROM islemler GROUP BY kanal"
+      },
+      "tags": [
+        "group"
+      ]
+    },
+    {
+      "id": "q05-en",
+      "text": "What is the average transaction amount per channel?",
+      "lang": "en",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT kanal, AVG(tutar) FROM islemler GROUP BY kanal",
+        "mssql": "SELECT kanal, AVG(tutar) FROM islemler GROUP BY kanal",
+        "duckdb": "SELECT kanal, AVG(tutar) FROM islemler GROUP BY kanal"
+      },
+      "tags": [
+        "group"
+      ]
+    },
+    {
+      "id": "q06-tr",
+      "text": "Aylık toplam işlem tutarını göster.",
+      "lang": "tr",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT TRUNC(islem_tarihi, 'MM'), SUM(tutar) FROM islemler GROUP BY TRUNC(islem_tarihi, 'MM')",
+        "mssql": "SELECT DATETRUNC(month, islem_tarihi), SUM(tutar) FROM islemler GROUP BY DATETRUNC(month, islem_tarihi)",
+        "duckdb": "SELECT DATE_TRUNC('month', islem_tarihi), SUM(tutar) FROM islemler GROUP BY DATE_TRUNC('month', islem_tarihi)"
+      },
+      "tags": [
+        "time",
+        "group"
+      ]
+    },
+    {
+      "id": "q06-en",
+      "text": "Show the total transaction amount by month.",
+      "lang": "en",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT TRUNC(islem_tarihi, 'MM'), SUM(tutar) FROM islemler GROUP BY TRUNC(islem_tarihi, 'MM')",
+        "mssql": "SELECT DATETRUNC(month, islem_tarihi), SUM(tutar) FROM islemler GROUP BY DATETRUNC(month, islem_tarihi)",
+        "duckdb": "SELECT DATE_TRUNC('month', islem_tarihi), SUM(tutar) FROM islemler GROUP BY DATE_TRUNC('month', islem_tarihi)"
+      },
+      "tags": [
+        "time",
+        "group"
+      ]
+    },
+    {
+      "id": "q07-tr",
+      "text": "En yüksek tutarlı 5 işlemi listele.",
+      "lang": "tr",
+      "ordered": true,
+      "gold": {
+        "oracle": "SELECT islem_id, tutar FROM islemler ORDER BY tutar DESC FETCH FIRST 5 ROWS ONLY",
+        "mssql": "SELECT TOP (5) islem_id, tutar FROM islemler ORDER BY tutar DESC",
+        "duckdb": "SELECT islem_id, tutar FROM islemler ORDER BY tutar DESC LIMIT 5"
+      },
+      "tags": [
+        "order",
+        "limit"
+      ]
+    },
+    {
+      "id": "q07-en",
+      "text": "List the 5 highest transactions by amount.",
+      "lang": "en",
+      "ordered": true,
+      "gold": {
+        "oracle": "SELECT islem_id, tutar FROM islemler ORDER BY tutar DESC FETCH FIRST 5 ROWS ONLY",
+        "mssql": "SELECT TOP (5) islem_id, tutar FROM islemler ORDER BY tutar DESC",
+        "duckdb": "SELECT islem_id, tutar FROM islemler ORDER BY tutar DESC LIMIT 5"
+      },
+      "tags": [
+        "order",
+        "limit"
+      ]
+    },
+    {
+      "id": "q08-tr",
+      "text": "Şube bazında müşteri sayısı nedir?",
+      "lang": "tr",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT sube_kodu, COUNT(*) FROM musteriler GROUP BY sube_kodu",
+        "mssql": "SELECT sube_kodu, COUNT(*) FROM musteriler GROUP BY sube_kodu",
+        "duckdb": "SELECT sube_kodu, COUNT(*) FROM musteriler GROUP BY sube_kodu"
+      },
+      "tags": [
+        "group"
+      ]
+    },
+    {
+      "id": "q08-en",
+      "text": "How many customers are there per branch?",
+      "lang": "en",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT sube_kodu, COUNT(*) FROM musteriler GROUP BY sube_kodu",
+        "mssql": "SELECT sube_kodu, COUNT(*) FROM musteriler GROUP BY sube_kodu",
+        "duckdb": "SELECT sube_kodu, COUNT(*) FROM musteriler GROUP BY sube_kodu"
+      },
+      "tags": [
+        "group"
+      ]
+    },
+    {
+      "id": "q09-tr",
+      "text": "Kaç farklı müşteri işlem yapmış?",
+      "lang": "tr",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT COUNT(DISTINCT musteri_id) FROM islemler",
+        "mssql": "SELECT COUNT(DISTINCT musteri_id) FROM islemler",
+        "duckdb": "SELECT COUNT(DISTINCT musteri_id) FROM islemler"
+      },
+      "tags": [
+        "aggregate",
+        "distinct"
+      ]
+    },
+    {
+      "id": "q09-en",
+      "text": "How many distinct customers made a transaction?",
+      "lang": "en",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT COUNT(DISTINCT musteri_id) FROM islemler",
+        "mssql": "SELECT COUNT(DISTINCT musteri_id) FROM islemler",
+        "duckdb": "SELECT COUNT(DISTINCT musteri_id) FROM islemler"
+      },
+      "tags": [
+        "aggregate",
+        "distinct"
+      ]
+    },
+    {
+      "id": "q10-tr",
+      "text": "İptal edilen işlemlerin sayısı nedir?",
+      "lang": "tr",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT COUNT(*) FROM islemler WHERE durum = 'iptal'",
+        "mssql": "SELECT COUNT(*) FROM islemler WHERE durum = 'iptal'",
+        "duckdb": "SELECT COUNT(*) FROM islemler WHERE durum = 'iptal'"
+      },
+      "tags": [
+        "filter"
+      ]
+    },
+    {
+      "id": "q10-en",
+      "text": "How many transactions were cancelled?",
+      "lang": "en",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT COUNT(*) FROM islemler WHERE durum = 'iptal'",
+        "mssql": "SELECT COUNT(*) FROM islemler WHERE durum = 'iptal'",
+        "duckdb": "SELECT COUNT(*) FROM islemler WHERE durum = 'iptal'"
+      },
+      "tags": [
+        "filter"
+      ]
+    },
+    {
+      "id": "q11-tr",
+      "text": "Aylık toplam tutarın kümülatif toplamını göster.",
+      "lang": "tr",
+      "ordered": true,
+      "gold": {
+        "oracle": "SELECT m, SUM(s) OVER (ORDER BY m) FROM (SELECT TRUNC(islem_tarihi,'MM') m, SUM(tutar) s FROM islemler GROUP BY TRUNC(islem_tarihi,'MM'))",
+        "mssql": "SELECT m, SUM(s) OVER (ORDER BY m) FROM (SELECT DATETRUNC(month, islem_tarihi) m, SUM(tutar) s FROM islemler GROUP BY DATETRUNC(month, islem_tarihi)) t",
+        "duckdb": "SELECT m, SUM(s) OVER (ORDER BY m) FROM (SELECT DATE_TRUNC('month', islem_tarihi) m, SUM(tutar) s FROM islemler GROUP BY 1) t ORDER BY m"
+      },
+      "tags": [
+        "time",
+        "window"
+      ]
+    },
+    {
+      "id": "q11-en",
+      "text": "Show the running total of the monthly transaction amount.",
+      "lang": "en",
+      "ordered": true,
+      "gold": {
+        "oracle": "SELECT m, SUM(s) OVER (ORDER BY m) FROM (SELECT TRUNC(islem_tarihi,'MM') m, SUM(tutar) s FROM islemler GROUP BY TRUNC(islem_tarihi,'MM'))",
+        "mssql": "SELECT m, SUM(s) OVER (ORDER BY m) FROM (SELECT DATETRUNC(month, islem_tarihi) m, SUM(tutar) s FROM islemler GROUP BY DATETRUNC(month, islem_tarihi)) t",
+        "duckdb": "SELECT m, SUM(s) OVER (ORDER BY m) FROM (SELECT DATE_TRUNC('month', islem_tarihi) m, SUM(tutar) s FROM islemler GROUP BY 1) t ORDER BY m"
+      },
+      "tags": [
+        "time",
+        "window"
+      ]
+    },
+    {
+      "id": "q12-tr",
+      "text": "Aylık işlem tutarının bir önceki aya göre yüzde değişimi nedir?",
+      "lang": "tr",
+      "ordered": true,
+      "gold": {
+        "oracle": "SELECT m, (s - LAG(s) OVER (ORDER BY m)) / NULLIF(LAG(s) OVER (ORDER BY m), 0) FROM (SELECT TRUNC(islem_tarihi,'MM') m, SUM(tutar) s FROM islemler GROUP BY TRUNC(islem_tarihi,'MM'))",
+        "mssql": "SELECT m, (s - LAG(s) OVER (ORDER BY m)) / NULLIF(LAG(s) OVER (ORDER BY m), 0) FROM (SELECT DATETRUNC(month, islem_tarihi) m, SUM(tutar) s FROM islemler GROUP BY DATETRUNC(month, islem_tarihi)) t",
+        "duckdb": "SELECT m, (s - LAG(s) OVER (ORDER BY m)) / NULLIF(LAG(s) OVER (ORDER BY m), 0) FROM (SELECT DATE_TRUNC('month', islem_tarihi) m, SUM(tutar) s FROM islemler GROUP BY 1) t ORDER BY m"
+      },
+      "tags": [
+        "time",
+        "window"
+      ]
+    },
+    {
+      "id": "q12-en",
+      "text": "What is the month-over-month percentage change in transaction amount?",
+      "lang": "en",
+      "ordered": true,
+      "gold": {
+        "oracle": "SELECT m, (s - LAG(s) OVER (ORDER BY m)) / NULLIF(LAG(s) OVER (ORDER BY m), 0) FROM (SELECT TRUNC(islem_tarihi,'MM') m, SUM(tutar) s FROM islemler GROUP BY TRUNC(islem_tarihi,'MM'))",
+        "mssql": "SELECT m, (s - LAG(s) OVER (ORDER BY m)) / NULLIF(LAG(s) OVER (ORDER BY m), 0) FROM (SELECT DATETRUNC(month, islem_tarihi) m, SUM(tutar) s FROM islemler GROUP BY DATETRUNC(month, islem_tarihi)) t",
+        "duckdb": "SELECT m, (s - LAG(s) OVER (ORDER BY m)) / NULLIF(LAG(s) OVER (ORDER BY m), 0) FROM (SELECT DATE_TRUNC('month', islem_tarihi) m, SUM(tutar) s FROM islemler GROUP BY 1) t ORDER BY m"
+      },
+      "tags": [
+        "time",
+        "window"
+      ]
+    },
+    {
+      "id": "q13-tr",
+      "text": "Premium segmentteki müşterilerin toplam işlem tutarı nedir?",
+      "lang": "tr",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT SUM(i.tutar) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id WHERE m.segment = 'premium'",
+        "mssql": "SELECT SUM(i.tutar) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id WHERE m.segment = 'premium'",
+        "duckdb": "SELECT SUM(i.tutar) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id WHERE m.segment = 'premium'"
+      },
+      "tags": [
+        "join",
+        "filter"
+      ]
+    },
+    {
+      "id": "q13-en",
+      "text": "What is the total transaction amount for premium segment customers?",
+      "lang": "en",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT SUM(i.tutar) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id WHERE m.segment = 'premium'",
+        "mssql": "SELECT SUM(i.tutar) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id WHERE m.segment = 'premium'",
+        "duckdb": "SELECT SUM(i.tutar) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id WHERE m.segment = 'premium'"
+      },
+      "tags": [
+        "join",
+        "filter"
+      ]
+    },
+    {
+      "id": "q14-tr",
+      "text": "Mobil kanaldaki işlemlerin medyan tutarı nedir?",
+      "lang": "tr",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT MEDIAN(tutar) FROM islemler WHERE kanal = 'mobil'",
+        "mssql": "SELECT DISTINCT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY tutar) OVER () FROM islemler WHERE kanal = 'mobil'",
+        "duckdb": "SELECT MEDIAN(tutar) FROM islemler WHERE kanal = 'mobil'"
+      },
+      "tags": [
+        "aggregate",
+        "filter"
+      ]
+    },
+    {
+      "id": "q14-en",
+      "text": "What is the median transaction amount on the mobile channel?",
+      "lang": "en",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT MEDIAN(tutar) FROM islemler WHERE kanal = 'mobil'",
+        "mssql": "SELECT DISTINCT PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY tutar) OVER () FROM islemler WHERE kanal = 'mobil'",
+        "duckdb": "SELECT MEDIAN(tutar) FROM islemler WHERE kanal = 'mobil'"
+      },
+      "tags": [
+        "aggregate",
+        "filter"
+      ]
+    },
+    {
+      "id": "q15-tr",
+      "text": "Her kanal için işlem tutarına göre sıralama ver.",
+      "lang": "tr",
+      "ordered": true,
+      "gold": {
+        "oracle": "SELECT kanal, RANK() OVER (ORDER BY SUM(tutar) DESC) FROM islemler GROUP BY kanal",
+        "mssql": "SELECT kanal, RANK() OVER (ORDER BY SUM(tutar) DESC) FROM islemler GROUP BY kanal",
+        "duckdb": "SELECT kanal, RANK() OVER (ORDER BY SUM(tutar) DESC) FROM islemler GROUP BY kanal ORDER BY 2"
+      },
+      "tags": [
+        "window",
+        "group"
+      ]
+    },
+    {
+      "id": "q15-en",
+      "text": "Rank the channels by their total transaction amount.",
+      "lang": "en",
+      "ordered": true,
+      "gold": {
+        "oracle": "SELECT kanal, RANK() OVER (ORDER BY SUM(tutar) DESC) FROM islemler GROUP BY kanal",
+        "mssql": "SELECT kanal, RANK() OVER (ORDER BY SUM(tutar) DESC) FROM islemler GROUP BY kanal",
+        "duckdb": "SELECT kanal, RANK() OVER (ORDER BY SUM(tutar) DESC) FROM islemler GROUP BY kanal ORDER BY 2"
+      },
+      "tags": [
+        "window",
+        "group"
+      ]
+    },
+    {
+      "id": "q16-tr",
+      "text": "En çok işlem yapan 3 müşteriyi göster.",
+      "lang": "tr",
+      "ordered": true,
+      "gold": {
+        "oracle": "SELECT musteri_id, COUNT(*) c FROM islemler GROUP BY musteri_id ORDER BY c DESC FETCH FIRST 3 ROWS ONLY",
+        "mssql": "SELECT TOP (3) musteri_id, COUNT(*) c FROM islemler GROUP BY musteri_id ORDER BY c DESC",
+        "duckdb": "SELECT musteri_id, COUNT(*) c FROM islemler GROUP BY musteri_id ORDER BY c DESC, musteri_id LIMIT 3"
+      },
+      "tags": [
+        "group",
+        "order",
+        "limit"
+      ]
+    },
+    {
+      "id": "q16-en",
+      "text": "Show the 3 customers with the most transactions.",
+      "lang": "en",
+      "ordered": true,
+      "gold": {
+        "oracle": "SELECT musteri_id, COUNT(*) c FROM islemler GROUP BY musteri_id ORDER BY c DESC FETCH FIRST 3 ROWS ONLY",
+        "mssql": "SELECT TOP (3) musteri_id, COUNT(*) c FROM islemler GROUP BY musteri_id ORDER BY c DESC",
+        "duckdb": "SELECT musteri_id, COUNT(*) c FROM islemler GROUP BY musteri_id ORDER BY c DESC, musteri_id LIMIT 3"
+      },
+      "tags": [
+        "group",
+        "order",
+        "limit"
+      ]
+    },
+    {
+      "id": "q17-tr",
+      "text": "E-postası olmayan müşteri sayısı nedir?",
+      "lang": "tr",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT COUNT(*) FROM musteriler WHERE eposta IS NULL",
+        "mssql": "SELECT COUNT(*) FROM musteriler WHERE eposta IS NULL",
+        "duckdb": "SELECT COUNT(*) FROM musteriler WHERE eposta IS NULL"
+      },
+      "tags": [
+        "filter",
+        "null"
+      ]
+    },
+    {
+      "id": "q17-en",
+      "text": "How many customers have no email address?",
+      "lang": "en",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT COUNT(*) FROM musteriler WHERE eposta IS NULL",
+        "mssql": "SELECT COUNT(*) FROM musteriler WHERE eposta IS NULL",
+        "duckdb": "SELECT COUNT(*) FROM musteriler WHERE eposta IS NULL"
+      },
+      "tags": [
+        "filter",
+        "null"
+      ]
+    },
+    {
+      "id": "q18-tr",
+      "text": "TRY cinsinden işlemlerin toplam tutarı nedir?",
+      "lang": "tr",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT SUM(tutar) FROM islemler WHERE para_birimi = 'TRY'",
+        "mssql": "SELECT SUM(tutar) FROM islemler WHERE para_birimi = 'TRY'",
+        "duckdb": "SELECT SUM(tutar) FROM islemler WHERE para_birimi = 'TRY'"
+      },
+      "tags": [
+        "filter"
+      ]
+    },
+    {
+      "id": "q18-en",
+      "text": "What is the total amount of transactions in TRY?",
+      "lang": "en",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT SUM(tutar) FROM islemler WHERE para_birimi = 'TRY'",
+        "mssql": "SELECT SUM(tutar) FROM islemler WHERE para_birimi = 'TRY'",
+        "duckdb": "SELECT SUM(tutar) FROM islemler WHERE para_birimi = 'TRY'"
+      },
+      "tags": [
+        "filter"
+      ]
+    },
+    {
+      "id": "q19-tr",
+      "text": "İşlem türü bazında en yüksek tutar nedir?",
+      "lang": "tr",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT islem_turu, MAX(tutar) FROM islemler GROUP BY islem_turu",
+        "mssql": "SELECT islem_turu, MAX(tutar) FROM islemler GROUP BY islem_turu",
+        "duckdb": "SELECT islem_turu, MAX(tutar) FROM islemler GROUP BY islem_turu"
+      },
+      "tags": [
+        "group"
+      ]
+    },
+    {
+      "id": "q19-en",
+      "text": "What is the maximum amount per transaction type?",
+      "lang": "en",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT islem_turu, MAX(tutar) FROM islemler GROUP BY islem_turu",
+        "mssql": "SELECT islem_turu, MAX(tutar) FROM islemler GROUP BY islem_turu",
+        "duckdb": "SELECT islem_turu, MAX(tutar) FROM islemler GROUP BY islem_turu"
+      },
+      "tags": [
+        "group"
+      ]
+    },
+    {
+      "id": "q20-tr",
+      "text": "Segment ve kanal kırılımında işlem sayısı nedir?",
+      "lang": "tr",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT m.segment, i.kanal, COUNT(*) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id GROUP BY m.segment, i.kanal",
+        "mssql": "SELECT m.segment, i.kanal, COUNT(*) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id GROUP BY m.segment, i.kanal",
+        "duckdb": "SELECT m.segment, i.kanal, COUNT(*) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id GROUP BY m.segment, i.kanal"
+      },
+      "tags": [
+        "join",
+        "group"
+      ]
+    },
+    {
+      "id": "q20-en",
+      "text": "How many transactions are there by segment and channel?",
+      "lang": "en",
+      "ordered": false,
+      "gold": {
+        "oracle": "SELECT m.segment, i.kanal, COUNT(*) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id GROUP BY m.segment, i.kanal",
+        "mssql": "SELECT m.segment, i.kanal, COUNT(*) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id GROUP BY m.segment, i.kanal",
+        "duckdb": "SELECT m.segment, i.kanal, COUNT(*) FROM islemler i JOIN musteriler m ON m.musteri_id = i.musteri_id GROUP BY m.segment, i.kanal"
+      },
+      "tags": [
+        "join",
+        "group"
+      ]
+    }
+  ]
+}

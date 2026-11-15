@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 from fusion.domain.catalog import SchemaCatalog
@@ -23,7 +24,7 @@ from fusion.domain.errors import QueryError
 from fusion.domain.identifiers import IDENTIFIER_RE
 from fusion.domain.models import TableRef, TableSchema
 from fusion.domain.policy import MaterializationPolicy, SemiJoinSpec, TargetPlan
-from fusion.domain.slices import LoadedSlice, Predicate, SliceSpec
+from fusion.domain.slices import LoadedSlice, Predicate, SliceSpec, ingest_schema
 from fusion.ports.analytics_store import AnalyticsStore
 from fusion.ports.data_source import DataSource
 
@@ -56,7 +57,12 @@ class SemiJoinExecutor:
         policy: MaterializationPolicy | None = None,
         clock: Callable[[], float] = time.time,
         max_ingest_rows: int = 0,
+        lock_for: Callable[[str], AbstractContextManager[Any]] | None = None,
     ) -> None:
+        #: The writer lock for one slice name: held from fetch to record, so an
+        #: eviction of the same name cannot land between the rename and the
+        #: catalog entry (SourceService's own loads hold the same lock).
+        self._lock_for = lock_for or (lambda _name: nullcontext())
         self._store = store
         self._catalog = catalog
         self._policy = policy or MaterializationPolicy()
@@ -76,24 +82,25 @@ class SemiJoinExecutor:
         spec = target.spec.with_predicate(Predicate(semi.target_key, "in", keys))
         table_name = spec.table_name_for(target.ref)
 
-        now = self._clock()
-        covering = self._catalog.find_covering_slice(target.ref, spec, now)
-        if covering is not None:
-            logger.info("Semi-join on %s reuses %s", target.ref.full_name, covering.table_name)
-            return covering
+        with self._lock_for(table_name):
+            now = self._clock()
+            covering = self._catalog.find_covering_slice(target.ref, spec, now)
+            if covering is not None:
+                logger.info("Semi-join on %s reuses %s", target.ref.full_name, covering.table_name)
+                return covering
 
-        count = self._fetch_in_chunks(target.ref, spec, keys, source, table_name)
-        loaded = self._catalog.record_slice(
-            LoadedSlice(
-                ref=target.ref,
-                spec=spec,
-                table_name=table_name,
-                row_count=count,
-                loaded_at=now,
-                last_used=now,
-                derived_from=f"semijoin:{semi.driver_table}.{semi.driver_key}",
+            count = self._fetch_in_chunks(target.ref, spec, keys, source, table_name)
+            loaded = self._catalog.record_slice(
+                LoadedSlice(
+                    ref=target.ref,
+                    spec=spec,
+                    table_name=table_name,
+                    row_count=count,
+                    loaded_at=now,
+                    last_used=now,
+                    derived_from=f"semijoin:{semi.driver_table}.{semi.driver_key}",
+                )
             )
-        )
         logger.info(
             "Semi-join loaded %d rows of %s from %d keys in %s",
             count,
@@ -156,11 +163,22 @@ class SemiJoinExecutor:
                 )
                 stream = source.fetch_slice(ref.table, chunk_spec, max_rows=remaining)
                 if index == 0:
-                    total += self._store.materialize_stream(
-                        staging, stream, stream.schema or self._slice_schema(ref, spec)
+                    fetched = self._store.materialize_stream(
+                        staging, stream, ingest_schema(stream.schema, self._slice_schema(ref, spec))
                     )
                 else:
-                    total += self._store.append_stream(staging, stream)
+                    fetched = self._store.append_stream(staging, stream)
+                total += fetched
+                capped: int | None = getattr(stream, "row_limit", None)
+                source_capped = capped is not None and (remaining is None or capped < remaining)
+                if source_capped and capped is not None and fetched >= capped:
+                    # Same reasoning as _check_budget: a join over rows the
+                    # source held back is a wrong answer, not a slow one.
+                    raise QueryError(
+                        f"The source stopped at its own limit of {capped:,} rows while "
+                        f"fetching {ref.full_name} by join key, so the join would be "
+                        "incomplete. Add a WHERE condition, or raise the source's export limit."
+                    )
                 self._check_budget(ref, total, len(keys))
         except Exception:
             self._store.drop_table(staging)

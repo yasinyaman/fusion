@@ -2,6 +2,232 @@
 
 All notable changes to Fusion OLAP Engine.
 
+## [Unreleased]
+
+### Added
+- **`bench/`: a six-arm benchmark** for whether the semantic layer actually
+  helps — raw text-to-SQL, Warp-catalog-assisted text-to-SQL, the DSL written
+  as free JSON, the DSL with decoding constrained to a schema built from the
+  semantic model, a deterministic word-matching arm with no model in it, and
+  that arm's proposal corrected by a model. All answer the same questions, so
+  the comparison is paired. Grades by result set rather than SQL text, and
+  reports execution accuracy with Wilson intervals, hallucinated-identifier
+  rate, exact match (a diagnostic, not a score) and median latency, compared
+  with McNemar's exact test and with one vote per question. The decision
+  thresholds are applied mechanically; they arrived in the same commit as the
+  results, so the repository cannot show they were fixed first. 40 questions, half Turkish, over a
+  banking-shaped schema, with gold queries stored per dialect because Oracle
+  and SQL Server genuinely differ where it matters. `bench/` sits outside the
+  `fusion` package, so it affects neither the coverage gate nor the
+  architecture rules. See `bench/README.md` for what the runs established —
+  including that the constrained arm removed all 17 of the unconstrained
+  arm's form errors, and that seeding a model with a deterministic proposal
+  gave the best DSL arm at 7b and tied the catalog-SQL arm (and did worse
+  than no model at all at 1.5b)
+
+- **`scenarios/`: sector scenarios that stress the whole engine.** Ten
+  synthetic source databases for banking, retail, telecom, healthcare,
+  manufacturing and logistics (66M rows at scale 1.0, deterministic), and 33
+  scenarios that drive every branch of the planner — slices, reuse, semi-joins,
+  refusals, pushdown, federation, the semantic layer, views, incremental
+  refresh, eviction, concurrency, guardrails, timeouts and REST — with every
+  answer checked against the source data itself. `python -m scenarios run`;
+  `python -m scenarios export` writes a Postgres + MySQL + Warp stack for the
+  same scenarios. See `scenarios/README.md`. The first run found the four
+  issues fixed below
+
+### Security
+- **A write could ride inside a query.** `WITH x AS (DELETE ... RETURNING *) SELECT * FROM x`
+  is a query on the outside, so it passed the guardrail, its tables were fetched, and only
+  DuckDB's parser stopped it. Any write node anywhere in a query is now refused before planning.
+- **A second statement could hide behind a DuckDB escape string.** `SELECT E'\'' ; DROP TABLE ...` passed the guardrail (which parsed SQL in sqlglot's generic dialect) and DuckDB ran the DROP. User SQL is now parsed strictly as DuckDB, so a statement the parser cannot read whole is refused and every statement in it is seen. The analyzer reads the same dialect, which also stops it pushing a condition that sits under an `OR` hidden that way, or slicing a `POSITIONAL JOIN`.
+- `SELECT ... FOR UPDATE/SHARE` is refused (pushed down, it took row locks at the source).
+- Request bodies over `FUSION_MAX_REQUEST_BYTES` (default 1 MiB) are refused with 413, declared or streamed.
+- The OpenAPI docs follow `FUSION_DEBUG_ENDPOINTS`: off in production unless switched on. `repr(Settings)` no longer shows the API keys. The SSRF check also blocks AWS's IPv6 and Alibaba's metadata addresses, IPv4-mapped forms, and every address a name resolves to.
+- The benchmark's Oracle password is read from `BENCH_ORACLE_PASSWORD` instead of the source.
+- **`EXPLAIN ANALYZE` executed what it explained.** `EXPLAIN ANALYZE DELETE ...`
+  passed the read-only guardrail and changed data. The statement under an
+  `EXPLAIN` now has to pass on its own.
+- **File reads with DuckDB external access on** (which in-memory backups need):
+  `FROM '/path/file.csv'`, a quoted `"read_csv"(...)` and a call hidden behind
+  an apostrophe in a comment all got through. The guardrail now also checks the
+  parsed tree, refuses SQL it cannot parse, and knows `read_xlsx`, `st_read`
+  and the `parquet_*` metadata functions.
+- `load_table` with an empty `where`, every column listed, or a filter that
+  keeps everything, and `create_view`, no longer get around the row budgets.
+- The rate limit can no longer be reset by sending a different made-up
+  `X-API-Key` each time, and failed key attempts are now limited too.
+- `FUSION_ENV` is trimmed and lower-cased, and an unknown value refuses to
+  start instead of running with authentication optional. Production requires
+  an API key of at least 16 characters.
+
+### Fixed
+- **MCP clients never saw a parameter description.** The MCP server published
+  the input schema `mcp` derives from each function's signature — names and
+  types only — so the 24 parameter descriptions in `TOOL_DEFINITIONS`, the
+  shape of a `query_metrics` filter and its operators (`eq`, `gte`, `in` …),
+  the `-` prefix of `order_by` and the `order_date:month` grain reached OpenAI
+  clients alone; a model on MCP had to learn them from an error. The server
+  now publishes the shared schema for every tool, and refuses to build if a
+  tool's signature and its published parameters name different things.
+- **A select-list alias was asked of the source as a column.** `... AS net ... ORDER BY net`
+  put `net` in the slice's field list; a source that checks fields (Warp answers HTTP 400) refused
+  the whole read. The analyzer reads names, not schemas, so the planner now keeps only names the
+  catalog says the table has. Found by running the scenarios against a real Warp, which the
+  in-process stand-in had hidden by ignoring unknown fields.
+- **A zoned timestamp lost its zone in a slice, and a query read wrong rows.** Arrow's
+  `timestamp[tz=UTC]` (what Warp exports for `timestamptz`) was stored as a plain `TIMESTAMP`,
+  so the query's own `WHERE ts >= '... +03:00'`, applied again locally, dropped the offset:
+  an Istanbul day counted 114 events instead of 134, and `AT TIME ZONE` gave wrong hours.
+  Zoned timestamps now stay `TIMESTAMPTZ`.
+- **An upper-case UUID found nothing.** Warp exports a UUID as text; kept as `VARCHAR`, the
+  slice compared `'F472...'` as a string after the source had matched it. A column the source
+  declares as `uuid` is now stored as `UUID`.
+- **Integers and decimals were widened.** Every integer became `BIGINT` and every decimal
+  `DECIMAL(38,9)`, so `date_col + smallint_col` (valid at the source) was a binder error and a
+  decimal median came back at a different scale. Columns now keep the width, precision and
+  scale the source declared; a parameterized type such as `numeric(12,2)` or `varchar(255)`
+  is read as one instead of falling back to `VARCHAR`.
+- **Queries that returned wrong rows without an error** on a table too big to
+  load whole: `ANTI JOIN` (fetched only the matching rows), `LIMIT ... OFFSET`
+  and `LIMIT` beside a condition the source cannot apply (the limit was read
+  at the source), a number compared to a text column or text to a number,
+  `IN` values containing a comma, and slice reuse that compared `'9'` and
+  `'10'` as text. `USING` and `NATURAL` joins no longer fail on a sliced table.
+  Also: slice reuse between `'2024-01-01T10:00'` and `'2024-01-01 12:00'`
+  (the separator decided the order), `LIMIT n PERCENT` read at the source as
+  `n` rows, two conditions with one column and operator (Warp's URL filters
+  kept only the last), semi-join keys sent to a column of another type, and
+  rows with a NULL key added again on every keyed incremental refresh.
+- **Semantic layer:** sequence transforms (`cumsum`, `lag`, `change`,
+  `time_shift`, ...) ran across every other dimension instead of within it;
+  two metrics that would share a column name silently returned one;
+  `is_null` with no value (or `null`) meant `IS NOT NULL`, and a non-boolean
+  value is now refused; `weighted_avg` counted the
+  weight of rows with no value.
+- Two concurrent first queries on the same table could leave it missing from
+  the store while the catalog called it loaded. Loads of one table now take
+  turns, and a waiting request reuses the finished load.
+- `refresh_view` recomputed from the tables as first loaded; it now re-reads
+  them. Incremental refresh with key columns catches a row changed within the
+  newest watermark value.
+- A semi-join cut short by the source's own export limit now refuses instead
+  of joining over the rows it was given.
+- Any `TIMESTAMP WITH TIME ZONE` value (`SELECT now()`) failed: `pytz` was
+  missing from the dependencies.
+- A failed raw query was re-sent to Warp three more times and, after five,
+  opened the circuit breaker for the whole source. POSTs are no longer
+  retried, and a 500 from the raw-query endpoint is the query's failure.
+- Unhandled errors on the REST API returned a bare 500 with no log line and
+  no `X-Request-ID`. A source that is down now answers 503 on every route,
+  and a tool (MCP included) says `Source unavailable: ...`; Warp's export and
+  paged reads no longer turn an outage into a query error.
+- `LEFT/RIGHT/FULL OUTER JOIN` (with the word `OUTER`) is sliced like
+  `LEFT JOIN` again.
+- A query on a table that is already loaded no longer waits for a reload of
+  that table to finish.
+- Text `!=` and ranges are no longer sent to the source, whose collation
+  (case-insensitive in MySQL, linguistic in Postgres) can drop rows DuckDB
+  keeps; nor is a LIMIT beside a text condition, nor a LIKE pattern with a
+  backslash. A quoted number on a number column (`id = '42'`) and `0`/`1` on
+  a boolean column are sent recast, as DuckDB reads them, instead of being
+  left out.
+- Loads are locked per slice, not per table: different slices of one table
+  load side by side, a request that waited reuses the slice it waited for,
+  and an eviction waits for a load of the same slice.
+- `load_table` with a filter answers to the same size limit, budget and
+  refusal text as a query, and reuses the same slice already loaded.
+- A failed view refresh no longer leaves cached answers about a table it had
+  already re-read; a view refused for size names what works for a view.
+- A thousand nested `EXPLAIN`s are a refusal, not a 500.
+- More conditions that could drop rows at the source are now kept local: a quoted decimal on a DECIMAL column (DuckDB casts it to the column's scale), any literal on a REAL/FLOAT column, a fractional number on an integer column, text on a zoned timestamp without an explicit offset, `!=`/LIKE on uuid, and anything on an array. Warp's `/schema` types are kept (`decimal(10,2)`, `timestamp with time zone`, `uuid`) instead of being reduced to their kind, and a sampled schema types ISO dates as dates. The store reads text in `FUSION_TIMEZONE` (default UTC).
+- Two conditions on one column and operator are merged exactly (`x > 5 AND x > 10`, two `IN` lists, a semi-join's keys over the query's own `IN`) instead of one being dropped.
+- A column alias list (`FROM t AS b(x, y)`) is no longer sliced as if `x` were the column `x`.
+- `search_data`, `load_table` of a whole table and `create_view` answer to the slice limit and the row budget like a query. The semi-join holds the slice's writer lock, a planned reuse of a slice evicted since loads it again, and the "loaded meanwhile" check always runs.
+- Append-mode incremental refresh re-reads the newest watermark value, so a row arriving in it is no longer lost.
+- A body cut off mid-read, a refused page and a database's 500 are classified properly: the first is "Source unavailable", the other two are the request's error (a 500 no longer counts against the circuit breaker on any route). Export POSTs are retried again; raw queries are still sent once.
+- `time_shift` of a row with no period is NULL; `aggregate_data`/`search_data` quote column names (`order`, `group`); a bare table name (`FROM users`) works; a source table named `mv_*` is a table; columns are sent to the source spelled as the catalog has them; a bad aggregation in `FUSION_SEMANTIC_MODEL` is skipped, not fatal; `fusion-mcp` honours `FUSION_LOG_LEVEL`; the demo's federation query no longer counts each payment once per session.
+- The MCP server gives each tool the same description OpenAI clients get (the metric grammar included).
+- A whole-table load that the source cut at its own export limit (Warp's `export.max_rows`) is refused instead of answering every COUNT and SUM short. A filtered slice cut that way is still kept, marked incomplete.
+- `DELETE /views/{name}` drops a materialized view, its timer and its definition.
+- The architecture test no longer lets the bare `fusion` entry allow every `fusion.*` import. The benchmark runs model SQL through the read-only guardrail before executing it on the connection every arm shares.
+- Two backups in the same second overwrote each other.
+- `query_metrics` raised `AttributeError` instead of a usable message when a
+  caller passed `order_by` as a list, or `metrics`/`dimensions`/`filters` with
+  the wrong type. Arguments arrive from a language model, so their *types* are
+  as untrusted as their values; every one of these is now a `QueryError`
+  naming the argument and showing the right shape. Found by the benchmark on
+  its first real run.
+
+### Changed
+- `query_data` reads at most 101 rows, so `row_count` is the number of rows
+  returned (at most 100), no longer the query's total. Repeated column names
+  come back as `id`, `id_2`.
+- `FUSION_QUERY_TIMEOUT` (default 300 s, at most a week) interrupts a query
+  on the store, and building a materialized view. Closing the store interrupts a running query.
+- A pushed-down query is capped with `LIMIT 101`; a source that refuses LIMIT (SQL Server, Oracle) gets it uncapped from then on.
+- Paged reads are ordered by the primary key from `/schema`.
+- An unknown refresh interval is refused instead of meaning manual. The backup schedule is validated only when backups are on.
+- `fusion-rest --reload` is accepted but ignored (it never worked: the app is built in-process).
+- A pushed-down `query_data` asks the source for at most 101 rows.
+- One watchdog thread enforces the query timeout, instead of one thread per
+  query. Views sharing a table re-read it once per refresh pass, and a keyed
+  incremental refresh that finds nothing changed writes nothing.
+- A scheduled view refresh must be at least 30 seconds apart.
+- `Settings.validate()` checks numeric ranges and the rate-limit format
+  (every form slowapi reads); `fusion-mcp` runs it too, without the HTTP-only
+  checks. `FUSION_BACKUP_ENABLED`, `FUSION_DEBUG_ENDPOINTS` and the other
+  flags accept `1`, `yes` and `on`.
+- The benchmark's hallucination check counts a name hidden behind an alias of
+  the same name, reads `USING` columns, and falls back to words for SQL that
+  does not fully parse.
+- Unexpected errors from a tool no longer include the exception text.
+
+## [1.2.0] - 2026-09-19
+
+Semantic layer: metric questions get answered without anyone writing SQL, and
+— unlike SQL — they still work on a table too big to load.
+
+### Added
+- **A metric DSL.** `measure:aggregation` (`revenue:sum`, `*:count`,
+  `price:weighted_avg(weight=quantity)`) wrapped in transforms that nest:
+  `change_pct(cumsum(revenue:sum))`. Transforms: `cumsum`, `change`,
+  `change_pct`, `time_shift`, `lag`, `lead`, `rank`, `dense_rank`,
+  `percent_rank`, `ntile`. Parsed by hand in the domain layer over a closed
+  alphabet, so an expression cannot carry a quote escape or a statement
+  separator, and every transform and aggregation is a whitelist lookup.
+- **`query_metrics` and `list_metrics` tools** (10 -> 12), on MCP, REST and the
+  SDK. `list_metrics` returns the model plus ready-to-paste expressions.
+- **Semantic models**, inferred from the discovered schema so the tools work
+  with no configuration, or named explicitly through `FUSION_SEMANTIC_MODEL`
+  (malformed JSON is logged and ignored, never fatal) or `app.semantic.define`.
+- **`FetchPlanner.plan_shape`** and **`QueryService.materialize_for`**: slices
+  can now be planned from a `QueryShape` the caller derived, with no SQL to
+  parse. This is what lets a windowed query be sliced at all — every transform
+  compiles to a window, and `SqlglotAnalyzer` refuses to reason about those, so
+  the planner used to fall back to loading whole tables and refuse anything
+  large. The shape comes from the metric expression, which knows the columns,
+  filters and grain exactly.
+- **`QueryService.run_local`** for SQL this process generated: validated like
+  any other query, but never planned, rewritten or pushed down.
+- **`QueryShape.merge_conservative`**, used to cross-check the generated scan
+  against the planned shape on every metric query. Columns union, predicates
+  intersect, so a disagreement costs a wider slice and a warning rather than
+  silently dropped rows.
+- `SemanticCompiler` port and its sqlglot/DuckDB adapter — the second and last
+  module allowed to import sqlglot.
+
+### Changed
+- `QueryService.sql` takes `local_only`, which stops SQL written for the
+  analytics store being shipped to a source. Correctness, not optimization:
+  pushdown swallows failures and falls back, so a syntax mismatch is merely
+  slow — but interval literals, `NULLS FIRST`/`NULLS LAST` defaults inside a
+  window and integer division parse on both sides and answer differently.
+- The compiler is the first code in Fusion to name a SQL dialect. It generates,
+  parses and validates as DuckDB, and its output is never handed back to the
+  neutral-dialect analyzer, whose round trip rewrites string literals and drops
+  quoting.
+
 ## [1.1.0] - 2026-09-18
 
 Smart transfer: a source table no longer has to fit in memory to be useful.

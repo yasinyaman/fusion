@@ -31,7 +31,9 @@ def build_parser(settings: Settings) -> argparse.ArgumentParser:
         "--port", type=int, default=settings.port, help=f"Bind port (default: {settings.port})"
     )
     add_source_args(parser, settings.warp_url)
-    parser.add_argument("--reload", action="store_true", help="Enable auto-reload for development")
+    # Accepted so existing scripts keep working, but it cannot work: the app is
+    # built in this process, and uvicorn reloads only an app it imports itself.
+    parser.add_argument("--reload", action="store_true", help="Not supported; ignored")
     parser.add_argument("--version", action="version", version=f"fusion {__version__}")
     return parser
 
@@ -82,10 +84,11 @@ def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = 
 
         import uvicorn
 
+        if args.reload:
+            logger.warning("--reload is not supported and is ignored; restart to pick up changes.")
+
         server = uvicorn.Server(
-            uvicorn.Config(
-                app=app, host=args.host, port=args.port, reload=args.reload, log_config=None
-            )
+            uvicorn.Config(app=app, host=args.host, port=args.port, log_config=None)
         )
         server.run()  # handles SIGINT/SIGTERM and returns on shutdown
         return 0

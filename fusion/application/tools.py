@@ -1,4 +1,4 @@
-"""ToolService: the 10 LLM tools, dispatched by name.
+"""ToolService: the 12 LLM tools, dispatched by name.
 
 Every method returns a JSON-serializable dict; failures become
 ``{"error": "..."}`` so MCP/REST/SDK callers get one uniform shape.
@@ -8,16 +8,23 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from fusion.application.planner import FetchPlanner
 from fusion.application.query import QueryService
+from fusion.application.semantic import SemanticService
 from fusion.application.sources import SourceService
 from fusion.application.tool_schemas import TOOL_NAMES
 from fusion.application.views import MaterializedViewService
 from fusion.domain.catalog import SchemaCatalog
-from fusion.domain.errors import BackupError, GuardrailViolation, QueryError, SchemaError
+from fusion.domain.errors import (
+    BackupError,
+    ConnectionError,
+    GuardrailViolation,
+    QueryError,
+    SchemaError,
+)
 from fusion.domain.identifiers import (
     ALLOWED_AGG_FUNCS,
     MAX_RESULT_ROWS,
@@ -25,8 +32,7 @@ from fusion.domain.identifiers import (
     validate_identifier,
 )
 from fusion.domain.models import MV_PREFIX, QueryResult, RowSet, TableRef
-from fusion.domain.policy import TargetPlan
-from fusion.domain.slices import Predicate, SliceSpec
+from fusion.domain.slices import Predicate, SliceSpec, column_kind
 from fusion.ports.analytics_store import AnalyticsStore
 from fusion.ports.cache import QueryCache
 from fusion.ports.data_source import PushdownCapable
@@ -34,10 +40,14 @@ from fusion.ports.sql_policy import SqlAnalyzer
 
 _WHERE_HELP = (
     "load_table's 'where' must be an AND of simple conditions comparing a "
-    "column to a literal (=, !=, <, <=, >, >=, LIKE, IN, IS NULL), for "
-    "example \"status = 'paid' AND amount > 100\". OR, NOT, functions, "
-    "subqueries and parameters cannot be sent to the source."
+    "column to a literal: =, !=, <, <=, >, >=, IN, IS NULL on numbers and "
+    "dates; =, IN, LIKE and IS NULL on text. For example "
+    "\"status = 'paid' AND amount > 100\". OR, NOT, functions, subqueries and "
+    "parameters cannot be sent to the source."
 )
+
+#: How a tool error starts when the source behind it is down (REST: 503).
+SOURCE_UNAVAILABLE = "Source unavailable"
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +63,7 @@ class ToolService:
         cache: QueryCache,
         planner: FetchPlanner | None = None,
         analyzer: SqlAnalyzer | None = None,
+        semantic: SemanticService | None = None,
     ) -> None:
         self._query = query
         self._sources = sources
@@ -62,6 +73,7 @@ class ToolService:
         self._cache = cache
         self._planner = planner or query.planner
         self._analyzer = analyzer or query.analyzer
+        self._semantic = semantic
         self._handlers: dict[str, Callable[..., dict[str, Any]]] = {
             name: getattr(self, name) for name in TOOL_NAMES
         }
@@ -76,11 +88,15 @@ class ToolService:
             return handler(**dict(arguments or {}))
         except (GuardrailViolation, QueryError, SchemaError, BackupError) as e:
             return {"error": str(e)}
+        except ConnectionError as e:
+            # Expected, and the caller can act on it: retry later.
+            return {"error": f"{SOURCE_UNAVAILABLE}: {e}"}
         except TypeError as e:
             return {"error": f"Invalid arguments for {tool_name}: {e}"}
         except Exception as e:
             logger.exception("Tool execution error: %s", tool_name)
-            return {"error": f"Internal error: {e}"}
+            # The text of an unexpected exception is for the log, not the caller.
+            return {"error": f"Internal error ({type(e).__name__}); see the server log."}
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -139,7 +155,8 @@ class ToolService:
         }
 
     def query_data(self, sql: str) -> dict[str, Any]:
-        return self._format_result(self._query.sql(sql))
+        # One row past the cap is enough to know the result was cut.
+        return self._format_result(self._query.sql(sql, max_rows=MAX_RESULT_ROWS + 1))
 
     def search_data(
         self, table: str, filter_column: str, filter_value: str, limit: int = 20
@@ -159,7 +176,7 @@ class ToolService:
         scanned = self._search_slice(table, filter_column, filter_value) or table
         operator = "LIKE" if "%" in filter_value else "="
         sql = (
-            f"SELECT * FROM {scanned} WHERE CAST({filter_column} AS VARCHAR) {operator} ? "
+            f"SELECT * FROM {scanned} WHERE CAST({_q(filter_column)} AS VARCHAR) {operator} ? "
             f"LIMIT {limit}"
         )
         return self._format_result(self._query.sql(sql, params=[filter_value]))
@@ -180,18 +197,31 @@ class ToolService:
         if self._planner.policy.allows_full_load(schema.known_estimate):
             # Small enough to take whole, which serves every later query too.
             return None
-        kinds = {c.name: c.type.lower() for c in schema.columns}
-        if not any(kinds.get(column, "").startswith(text) for text in ("varchar", "text", "char")):
+        kinds = {c.name: c.type for c in schema.columns}
+        if column_kind(kinds.get(column)) != "text":
             return None
         source = self._sources.source(ref.source)
         if source is None or not source.capabilities.slices:
             return None
-        spec = SliceSpec(predicates=(Predicate(column, "like" if "%" in value else "eq", value),))
-        covering = self._catalog.find_covering_slice(ref, spec)
+        asked = Predicate(column, "like" if "%" in value else "eq", value)
+        # The planner's rules and limits, as for any slice: a LIKE pattern the
+        # source would read differently is not sent, and the budget applies.
+        pushable = self._planner.pushable_predicates(ref, (asked,))
+        if not pushable:
+            return None
+        covering = self._catalog.find_covering_slice(ref, SliceSpec(predicates=pushable))
         if covering is not None:
             return covering.table_name
+        plan = self._planner.plan_slice(
+            ref, SliceSpec(predicates=pushable), self._sources.estimate_slice
+        )
+        if plan.is_refused:
+            logger.info("Search slice for %s refused (%s)", table, plan.refusal.splitlines()[0])
+            return None
         try:
-            return self._sources.ensure_slices([TargetPlan(ref, spec, "load_slice")]).get(ref)
+            for evicted in plan.evictions:
+                self._sources.evict_slice(evicted)
+            return self._sources.ensure_slices(plan.targets).get(ref)
         except QueryError as e:
             logger.info("Search slice for %s unavailable (%s); loading the table", table, e)
             return None
@@ -216,9 +246,10 @@ class ToolService:
         if pushed is not None:
             return pushed
 
+        # Quoted, so a column called ``order`` or ``group`` is a column.
         sql = (
-            f"SELECT {group_by}, {func}({agg_column}) AS {alias} FROM {table} "
-            f"GROUP BY {group_by} ORDER BY {alias} DESC LIMIT {MAX_RESULT_ROWS}"
+            f"SELECT {_q(group_by)}, {func}({_q(agg_column)}) AS {_q(alias)} FROM {table} "
+            f"GROUP BY {_q(group_by)} ORDER BY {_q(alias)} DESC LIMIT {MAX_RESULT_ROWS}"
         )
         return self._format_result(self._query.sql(sql))
 
@@ -260,7 +291,7 @@ class ToolService:
             return {"error": "Use 'source.table' format (e.g. 'mydb.orders')"}
         if not self._catalog.has_table(ref):
             return {"error": str(_missing_table_error(self._catalog, ref))}
-        if where is None and not columns:
+        if not where and not columns:  # an LLM sends "" for an argument it leaves out
             return self._load_whole_table(ref, table)
         return self._load_slice(ref, table, where, columns)
 
@@ -270,6 +301,8 @@ class ToolService:
         plan = self._planner.plan_query(f"SELECT * FROM {table}")
         if plan.is_refused:
             return {"error": plan.refusal}
+        for evicted in plan.evictions:  # the budget a query's load answers to
+            self._sources.evict_slice(evicted)
         newly = self._sources.ensure_loaded([ref])
         if ref in newly:
             return {"status": "loaded", "table": table, "row_count": self._row_count(ref)}
@@ -293,10 +326,29 @@ class ToolService:
             return {"error": _WHERE_HELP}
         if where and not use.predicates:
             return {"error": _WHERE_HELP}
-        spec = use.slice_spec()
-        target = TargetPlan(ref, spec, "load_slice")
+        refused = self._planner.unpushable(ref, use.predicates)
+        pushable = self._planner.pushable_predicates(ref, use.predicates)
+        if refused:
+            left = refused[0]
+            return {
+                "error": f"Cannot load a slice by '{left}': the source would not compare it "
+                f"the way DuckDB does on column '{left.column}' (a value of another type, "
+                "a text range or != that its collation decides, or a second condition "
+                "with the same column and operator). Quote text values, leave numbers "
+                "bare, and filter text with =, IN or LIKE (narrow by a number or date "
+                "column first if the table is too big to load whole)."
+            }
+        spec = SliceSpec(columns=use.columns, predicates=pushable)
+        # The decisions a query's slice gets: reuse, the size limit and the
+        # budget. Listing every column, or a filter that keeps most of the
+        # table, is not a way around them.
+        plan = self._planner.plan_slice(ref, spec, self._sources.estimate_slice)
+        if plan.is_refused:
+            return {"error": plan.refusal}
+        for evicted in plan.evictions:
+            self._sources.evict_slice(evicted)
         try:
-            table_name = self._sources.ensure_slices([target])[ref]
+            table_name = self._sources.ensure_slices(plan.targets)[ref]
         except KeyError:
             return {"error": f"No connected source for '{table}'"}
         loaded = self._catalog.slices.get(table_name)
@@ -314,6 +366,38 @@ class ToolService:
             return self._store.count(ref.full_name)
         except QueryError:
             return -1
+
+    def list_metrics(self, table: str | None = None) -> dict[str, Any]:
+        """The semantic model for a table, or a summary of every table's."""
+        return self._require_semantic().describe(table)
+
+    def query_metrics(
+        self,
+        table: str,
+        metrics: list[str],
+        dimensions: list[str] | None = None,
+        filters: list[dict[str, Any]] | None = None,
+        order_by: str = "",
+        limit: int = MAX_RESULT_ROWS,
+    ) -> dict[str, Any]:
+        """Aggregate and transform without the caller writing any SQL."""
+        result = self._require_semantic().run(
+            table,
+            metrics,
+            dimensions or (),
+            filters or (),
+            order_by=order_by,
+            limit=limit,
+        )
+        return self._format_result(result)
+
+    def _require_semantic(self) -> SemanticService:
+        if self._semantic is None:
+            raise QueryError(
+                "The semantic layer is not available in this build. "
+                "Use query_data or aggregate_data instead."
+            )
+        return self._semantic
 
     def cache_stats(self) -> dict[str, Any]:
         return self._cache.stats()
@@ -393,29 +477,54 @@ class ToolService:
 
     @staticmethod
     def _format_result(result: QueryResult) -> dict[str, Any]:
-        records = result.to_records()
-        truncated = len(records) > MAX_RESULT_ROWS
+        columns = _unique_names(result.columns)
         return {
-            "columns": list(result.columns),
-            "rows": records[:MAX_RESULT_ROWS],
-            "row_count": result.row_count,
-            "truncated": truncated,
+            "columns": columns,
+            "rows": [dict(zip(columns, row, strict=True)) for row in result.rows[:MAX_RESULT_ROWS]],
+            "row_count": min(result.row_count, MAX_RESULT_ROWS),
+            "truncated": result.row_count > MAX_RESULT_ROWS,
             "execution_time_ms": round(result.execution_time_ms, 1),
             "from_cache": result.from_cache,
         }
 
     @staticmethod
     def _format_rowset(rows: RowSet, elapsed_ms: float = 0.0) -> dict[str, Any]:
-        records = rows.to_records()
-        truncated = len(records) > MAX_RESULT_ROWS
+        columns = _unique_names(rows.columns)
         return {
-            "columns": list(rows.columns),
-            "rows": records[:MAX_RESULT_ROWS],
-            "row_count": len(rows),
-            "truncated": truncated,
+            "columns": columns,
+            "rows": [dict(zip(columns, row, strict=True)) for row in rows.rows[:MAX_RESULT_ROWS]],
+            "row_count": min(len(rows), MAX_RESULT_ROWS),
+            "truncated": len(rows) > MAX_RESULT_ROWS,
             "execution_time_ms": round(elapsed_ms, 1),
             "from_cache": False,
         }
+
+
+def _q(identifier: str) -> str:
+    """A validated identifier, quoted for the store (DuckDB stays case-insensitive)."""
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _unique_names(columns: Sequence[str]) -> list[str]:
+    """Column names with repeats suffixed (``id``, ``id_2``): a row is a dict.
+
+    A suffix skips any name already taken, including a real column called
+    ``id_2`` that comes later, so no two columns share a key.
+    """
+    taken = set(columns)
+    kept: set[str] = set()
+    names = []
+    for column in columns:
+        if column not in kept:
+            kept.add(column)
+            names.append(column)
+            continue
+        n = 2
+        while f"{column}_{n}" in taken:
+            n += 1
+        taken.add(f"{column}_{n}")
+        names.append(f"{column}_{n}")
+    return names
 
 
 def _missing_table_error(catalog: SchemaCatalog, ref: TableRef) -> SchemaError:

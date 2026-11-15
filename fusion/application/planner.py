@@ -11,7 +11,8 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 
 from fusion.domain.catalog import SchemaCatalog
 from fusion.domain.models import FetchPlan, TableRef
@@ -22,9 +23,17 @@ from fusion.domain.policy import (
     TargetPlan,
     budget_message,
     refusal_message,
+    view_refusal_message,
 )
 from fusion.domain.query_shape import QueryShape
-from fusion.domain.slices import SliceSpec
+from fusion.domain.slices import (
+    Predicate,
+    SliceSpec,
+    column_kind,
+    keys_are_pushable,
+    merge_same_key,
+    pushable_form,
+)
 from fusion.ports.sql_policy import SqlAnalyzer
 
 logger = logging.getLogger(__name__)
@@ -87,6 +96,37 @@ class FetchPlanner:
         """Decide what to materialize before ``sql`` can run locally."""
         fetch = self.plan_for_sql(sql)
         shape = self._analyzer.analyze(sql)
+        return self._plan(fetch, shape, estimator)
+
+    def plan_shape(self, shape: QueryShape, estimator: SliceEstimator | None = None) -> QueryPlan:
+        """Decide what to materialize for a query that was never SQL text.
+
+        The semantic layer builds its own shape, exactly, from the metric
+        expression — so there is nothing to parse and nothing for the analyzer
+        to give up on. Everything after this point (reuse, slices, semi-joins,
+        the row budget, refusals) is the same code ``plan_query`` runs.
+        """
+        return self._plan(self._fetch_for_shape(shape), shape, estimator)
+
+    def _fetch_for_shape(self, shape: QueryShape) -> FetchPlan:
+        """Resolve a shape's tables against the catalog, as ``plan_for_sql`` does."""
+        plan = FetchPlan(strategy_used="shape")
+        known = set(self._catalog.list_tables())
+        for use in shape.tables:
+            if use.ref.is_view:
+                plan.has_mv_reference = True
+            elif use.ref in known:
+                plan.add(use.ref)
+        if not plan.is_empty():
+            sources = {t.source for t in plan.targets}
+            plan.is_single_source = len(sources) == 1
+            plan.source_name = next(iter(sources)) if plan.is_single_source else None
+            plan.all_targets_unloaded = all(not self._catalog.is_loaded(t) for t in plan.targets)
+        return plan
+
+    def _plan(
+        self, fetch: FetchPlan, shape: QueryShape, estimator: SliceEstimator | None
+    ) -> QueryPlan:
         if fetch.is_empty():
             return QueryPlan(fetch=fetch, shape=shape)
 
@@ -168,8 +208,162 @@ class FetchPlanner:
         use = shape.use_for(ref)
         if use is None:
             return SliceSpec.FULL
-        limit = shape.limit if shape.limit_is_pushable else None
-        return use.slice_spec(limit=limit)
+        pushable, applied_all = self._pushable(ref, use.predicates)
+        types = self._column_types(ref)
+        # A source applies every condition exactly only when none was left
+        # behind and none is on text, where its collation may let more rows
+        # through; only then may it apply the LIMIT too.
+        exact = applied_all and all(
+            p.op == "is_null" or column_kind(types.get(p.column.lower())) != "text"
+            for p in pushable
+        )
+        limit = shape.limit if exact and shape.limit_is_pushable else None
+        # DuckDB matches ``Name`` to a column ``name``; a source may not, so the
+        # slice names columns as the catalog spells them.
+        spelled = self._catalog_spelling(ref)
+        columns = self._projection(use.columns, spelled)
+        return SliceSpec(columns=columns, predicates=pushable, limit=limit)
+
+    @staticmethod
+    def _projection(
+        referenced: frozenset[str] | None, spelled: Mapping[str, str]
+    ) -> frozenset[str] | None:
+        """The columns to fetch: those the query names that the table really has.
+
+        The analyzer reads names, not schemas, so ``ORDER BY net`` or ``HAVING
+        n > 1`` hands it ``net`` and ``n``: select-list aliases, which no source
+        has. A source that checks its field list (Warp answers 400) would refuse
+        the whole read. When the catalog knows the table, names it does not
+        have are dropped; if nothing is left, every column is read, as for
+        ``SELECT COUNT(*)``.
+        """
+        if referenced is None:
+            return None
+        if not spelled:
+            return frozenset(referenced)
+        kept = frozenset(spelled[c.lower()] for c in referenced if c.lower() in spelled)
+        return kept or None
+
+    def _catalog_spelling(self, ref: TableRef) -> dict[str, str]:
+        if not self._catalog.has_table(ref):
+            return {}
+        return {c.name.lower(): c.name for c in self._catalog.get_table(ref).columns}
+
+    def plan_slice(
+        self, ref: TableRef, spec: SliceSpec, estimator: SliceEstimator | None
+    ) -> QueryPlan:
+        """Plan loading exactly ``spec`` of ``ref`` (``load_table`` with a filter).
+
+        The same decisions a query's slice gets: the size limit and the budget
+        apply, and the refusal says what to do. A slice of a table that may be
+        loaded whole is never refused for size: it is smaller than what is
+        allowed. The same slice already loaded is reused; a wider one is not,
+        since the caller asked for this slice and its row count.
+        """
+        covering = self._catalog.find_covering_slice(ref, spec, self._clock())
+        if covering is not None and covering.spec.normalized() == spec.normalized():
+            target = TargetPlan(ref, spec, "reuse", covering=covering)
+            return QueryPlan(fetch=FetchPlan(targets=[ref]), shape=QueryShape(), targets=(target,))
+        estimate = self._table_estimate(ref)
+        slice_estimate = estimator(ref, spec) if estimator is not None else None
+        if not (
+            self._policy.allows_slice(slice_estimate) or self._policy.allows_full_load(estimate)
+        ):
+            reason = refusal_message(
+                ref,
+                estimate,
+                self._policy,
+                hints=[
+                    f"the filter still matches about {slice_estimate:,} rows "
+                    f"(slice_max_rows={self._policy.slice_max_rows:,}); narrow it further"
+                ],
+            )
+            target = TargetPlan(ref, spec, "refuse", estimate=estimate, reason=reason)
+            return QueryPlan(
+                fetch=FetchPlan(targets=[ref]),
+                shape=QueryShape(),
+                targets=(target,),
+                refusal=reason,
+            )
+        target = TargetPlan(
+            ref, spec, "load_slice", estimate=estimate, slice_estimate=slice_estimate
+        )
+        evictions, refusal = self._fit_budget([target])
+        return QueryPlan(
+            fetch=FetchPlan(targets=[ref]),
+            shape=QueryShape(),
+            targets=(target,),
+            evictions=evictions,
+            refusal=refusal,
+        )
+
+    def pushable_predicates(
+        self, ref: TableRef, predicates: Sequence[Predicate]
+    ) -> tuple[Predicate, ...]:
+        """The conditions a source can apply, each in its column's own kind."""
+        return self._pushable(ref, predicates)[0]
+
+    def unpushable(self, ref: TableRef, predicates: Sequence[Predicate]) -> list[Predicate]:
+        """The conditions no source could be sent, in the order asked."""
+        types = self._column_types(ref)
+        return [p for p in predicates if pushable_form(p, types.get(p.column.lower())) is None]
+
+    def _pushable(
+        self, ref: TableRef, predicates: Sequence[Predicate]
+    ) -> tuple[tuple[Predicate, ...], bool]:
+        """Pushable conditions, merged to one per column and operator, and exactness.
+
+        Exact means the source applies every condition as DuckDB would: none
+        was left out and no merge had to give one up.
+        """
+        types = self._column_types(ref)
+        spelled = self._catalog_spelling(ref)
+        forms: list[Predicate] = []
+        for p in predicates:
+            form = pushable_form(p, types.get(p.column.lower()))
+            if form is not None:
+                forms.append(replace(form, column=spelled.get(p.column.lower(), p.column)))
+        merged, exact = merge_same_key(forms)
+        return merged, exact and len(forms) == len(predicates)
+
+    def _column_types(self, ref: TableRef) -> dict[str, str]:
+        if not self._catalog.has_table(ref):
+            return {}
+        return {c.name.lower(): c.type for c in self._catalog.get_table(ref).columns}
+
+    def plan_full_loads(self, refs: Sequence[TableRef]) -> QueryPlan:
+        """Plan loading ``refs`` whole (a materialized view reads whole tables).
+
+        The size limit (with the refusal that says what works for a view) and
+        the row budget apply, as they do to a query's loads.
+        """
+        targets: list[TargetPlan] = []
+        for ref in refs:
+            if self._catalog.is_loaded(ref):
+                continue
+            refusal = self.full_load_refusal(ref)
+            if refusal:
+                return QueryPlan(
+                    fetch=FetchPlan(targets=list(refs)), shape=QueryShape(), refusal=refusal
+                )
+            targets.append(
+                TargetPlan(ref, SliceSpec.FULL, "load_full", estimate=self._table_estimate(ref))
+            )
+        evictions, refusal = self._fit_budget(targets) if targets else ((), "")
+        return QueryPlan(
+            fetch=FetchPlan(targets=list(refs)),
+            shape=QueryShape(),
+            targets=tuple(targets),
+            evictions=evictions,
+            refusal=refusal,
+        )
+
+    def full_load_refusal(self, ref: TableRef) -> str:
+        """Why ``ref`` may not be loaded whole, or ``""`` when it may."""
+        estimate = self._table_estimate(ref)
+        if self._policy.allows_full_load(estimate):
+            return ""
+        return view_refusal_message(ref, estimate, self._policy)
 
     def _table_estimate(self, ref: TableRef) -> int | None:
         """Source-side size of a table, as far as the catalog knows it."""
@@ -225,6 +419,11 @@ class FetchPlanner:
                 continue
             driver = by_ref.get(driver_use.ref)
             if driver is None or driver.action == "refuse":
+                continue
+            driver_type = self._column_types(driver.ref).get(other[1].lower())
+            target_type = self._column_types(target.ref).get(target_column.lower())
+            if not keys_are_pushable(driver_type, target_type):
+                # The source would compare the keys differently from the join.
                 continue
             driver_rows = self._driver_size(driver)
             if not self._policy.allows_semi_join(driver_rows):

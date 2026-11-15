@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
-from fusion.domain.errors import QueryError
+from fusion.domain.errors import ConnectionError, QueryError
 from fusion.domain.models import ColumnInfo, RowSet, TableSchema
 from fusion.domain.slices import Predicate, SliceSpec
 
@@ -37,24 +39,50 @@ DEFAULT_BATCH_SIZE = 10_000
 PAGED_IN_CHUNK = 200
 
 #: Arrow type prefix -> the type names Fusion's store understands.
+#:
+#: Integers keep their width: a source's ``smallint`` that arrives as ``bigint``
+#: breaks expressions the source accepts (DuckDB has ``DATE + INTEGER``, not
+#: ``DATE + BIGINT``). Unsigned types take the next signed width up, which
+#: holds every value. Checked in order, so the longer prefixes come first.
 _ARROW_KINDS: tuple[tuple[str, str], ...] = (
     ("bool", "boolean"),
-    ("int", "integer"),
-    ("uint", "integer"),
+    ("int8", "smallint"),
+    ("int16", "smallint"),
+    ("int32", "integer"),
+    ("int64", "bigint"),
+    ("uint8", "smallint"),
+    ("uint16", "integer"),
+    ("uint32", "bigint"),
+    ("uint64", "ubigint"),
+    ("halffloat", "double"),
     ("float", "double"),
     ("double", "double"),
-    ("halffloat", "double"),
-    ("decimal", "decimal"),
     ("timestamp", "timestamp"),
     ("date", "date"),
     ("time", "time"),
-    ("binary", "blob"),
     ("fixed_size_binary", "blob"),
+    ("binary", "blob"),
+    ("large_binary", "blob"),
 )
+
+#: ``decimal128(12, 2)``: precision and scale survive, so the store holds
+#: what the source holds (a median rounds to the column's own scale).
+_ARROW_DECIMAL = re.compile(r"decimal(?:32|64|128|256)?\((\d+),\s*(-?\d+)\)")
 
 
 def _arrow_type_name(arrow_type: Any) -> str:
     text = str(arrow_type).lower()
+    decimal = _ARROW_DECIMAL.match(text)
+    if decimal:
+        precision, scale = int(decimal.group(1)), int(decimal.group(2))
+        # DuckDB's DECIMAL stops at 38 digits; wider values fit a double only.
+        if precision <= 38 and 0 <= scale <= precision:
+            return f"decimal({precision},{scale})"
+        return "double"
+    if text.startswith("timestamp") and "tz=" in text:
+        # A zoned timestamp read back without its zone compares a literal's
+        # offset away: '... 00:00+03:00' would mean midnight UTC.
+        return "timestamp with time zone"
     for prefix, name in _ARROW_KINDS:
         if text.startswith(prefix):
             return name
@@ -96,8 +124,9 @@ class ArrowRowStream:
             return
         self._taken = True
         columns = self.columns
-        for batch in self._reader:
-            yield _rowset(batch.to_pylist(), columns)
+        with _read_failures_as_outage("Arrow"):
+            for batch in self._reader:
+                yield _rowset(batch.to_pylist(), columns)
 
     def close(self) -> None:
         if self._response is not None:
@@ -131,16 +160,17 @@ class NdjsonRowStream:
 
     def __iter__(self) -> Iterator[RowSet]:
         batch: list[dict[str, Any]] = []
-        for line in self._response.iter_lines():
-            if not line:
-                continue
-            try:
-                batch.append(json.loads(line))
-            except ValueError as e:
-                raise QueryError(f"Malformed NDJSON row from Warp: {e}") from e
-            if len(batch) >= self._batch_size:
-                yield self._batch(batch)
-                batch = []
+        with _read_failures_as_outage("NDJSON"):
+            for line in self._response.iter_lines():
+                if not line:
+                    continue
+                try:
+                    batch.append(json.loads(line))
+                except ValueError as e:
+                    raise QueryError(f"Malformed NDJSON row from Warp: {e}") from e
+                if len(batch) >= self._batch_size:
+                    yield self._batch(batch)
+                    batch = []
         if batch:
             yield self._batch(batch)
 
@@ -168,8 +198,10 @@ class PagedRowStream:
         spec: SliceSpec = SliceSpec.FULL,
         page_size: int = 1000,
         max_rows: int | None = None,
+        sort: str | None = None,
     ) -> None:
         self._pager = pager
+        self._sort = sort
         self._table = table
         self._spec = spec
         self._page_size = max(1, page_size)
@@ -207,6 +239,7 @@ class PagedRowStream:
                         offset=offset,
                         fields=fields,
                         filters=predicates,
+                        **({"sort": self._sort} if self._sort else {}),
                     )
                 )
                 if not page:
@@ -227,6 +260,23 @@ class PagedRowStream:
 
     def close(self) -> None:
         return None
+
+
+@contextmanager
+def _read_failures_as_outage(kind: str) -> Iterator[None]:
+    """A body that stops arriving after the headers did is the source failing.
+
+    ``requests``/``urllib3`` raise their own exceptions mid-body (a dropped
+    connection, a chunked body cut short), which are not the domain's
+    ConnectionError, so without this they reached callers as internal errors.
+    """
+    import requests
+    import urllib3
+
+    try:
+        yield
+    except (requests.RequestException, urllib3.exceptions.HTTPError) as e:
+        raise ConnectionError(f"Warp's {kind} export ended early: {e}") from e
 
 
 def _tightest(*limits: int | None) -> int | None:

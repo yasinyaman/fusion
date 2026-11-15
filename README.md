@@ -2,11 +2,11 @@
 
 **DuckDB-powered in-memory analytics engine with LLM tool support.**
 
-Fusion connects to PostgreSQL/MySQL databases through the [Warp](https://github.com/yasinyaman/warp) REST API, lazily loads the tables a query needs into DuckDB, and exposes 10 analytics tools to LLMs over MCP, a REST API and a Python SDK.
+Fusion connects to PostgreSQL/MySQL databases through the [Warp](https://github.com/yasinyaman/warp) REST API, lazily loads the tables a query needs into DuckDB, and exposes 12 analytics tools to LLMs over MCP, a REST API and a Python SDK.
 
 ## Features
 
-- **10 LLM tools** — `list_sources`, `describe_table`, `query_data`, `search_data`, `aggregate_data`, `create_view`, `list_views`, `refresh_view`, `load_table`, `cache_stats`
+- **12 LLM tools** — `list_sources`, `describe_table`, `query_data`, `search_data`, `aggregate_data`, `create_view`, `list_views`, `refresh_view`, `load_table`, `list_metrics`, `query_metrics`, `cache_stats`
 - **Three access layers** — MCP server (stdio), REST API (FastAPI), Python SDK; tool definitions in OpenAI function-calling and MCP formats
 - **Lazy loading** — connecting a source fetches metadata only; tables are pulled on first use
 - **Smart transfer** — a table too big for memory is read one slice at a time: only the columns and rows a query touches, streamed as Arrow, reused by later queries, and refused with concrete advice when even that is too much
@@ -153,9 +153,58 @@ result = app.tools.execute("query_data", {"sql": "SELECT ..."})   # when the mod
 | `list_views` | List materialized views with refresh schedule |
 | `refresh_view` | Manually refresh a materialized view |
 | `load_table` | Load a table, or just the slice `where` / `columns` describe |
+| `list_metrics` | Measures, dimensions, grains and transforms a table offers |
+| `query_metrics` | Aggregate and transform without writing SQL |
 | `cache_stats` | Query cache hit rate and entry count |
 
 Every tool returns a JSON-serializable dict; failures come back as `{"error": "..."}`.
+
+## Does the semantic layer actually help?
+
+`bench/` answers that with numbers rather than assertion: three arms (raw
+text-to-SQL, catalog-assisted text-to-SQL, the semantic DSL) answer the same
+40 questions against the same database, graded by result set and compared with
+a paired McNemar test. See [`bench/README.md`](bench/README.md).
+
+## Asking for metrics instead of writing SQL
+
+A metric is `measure:aggregation`, optionally wrapped in transforms that nest:
+
+```python
+app.tools.list_metrics("shop.orders")          # what can be asked, with examples
+
+app.tools.query_metrics(
+    table="shop.orders",
+    metrics=["revenue:sum", "change_pct(cumsum(revenue:sum))"],
+    dimensions=["order_date:month"],           # day, week, month, quarter, year
+    filters=[{"column": "status", "value": "paid"}],
+)
+```
+
+Aggregations: `sum`, `avg`, `min`, `max`, `count`, `median`, `count_distinct`,
+`weighted_avg(weight=<column>)`. `*:count` counts rows. Transforms: `cumsum`,
+`change`, `change_pct`, `time_shift`, `lag`, `lead`, `rank`, `dense_rank`,
+`percent_rank`, `ntile`.
+
+`lag` and `time_shift` are different on purpose. `lag` returns the previous
+*result row*; `time_shift` returns the previous *calendar period* by the time
+dimension's grain, which is NULL when that period has no row. On months
+`{Jan, Feb, Apr}`, April's `lag` is February's value and its `time_shift` is
+nothing — because March does not exist.
+
+Measures and dimensions are inferred from the discovered schema, so this works
+with no configuration. To name them yourself, set `FUSION_SEMANTIC_MODEL`:
+
+```json
+{"shop.orders": {
+   "measures": [{"name": "revenue", "column": "amount"}],
+   "dimensions": [{"name": "day", "column": "order_date", "temporal": true}]}}
+```
+
+Metric queries are planned from the metric expression rather than by parsing
+SQL, so they can slice a table too big to load — which plain SQL cannot do once
+a window function is involved (see below). The generated SQL is DuckDB's and is
+never pushed down to a source.
 
 ## Working with tables larger than memory
 
@@ -230,16 +279,19 @@ fusion/
 └── observability/              # logging setup and formatters
 tests/                          # domain, ports (contract tests), adapters, application, inbound, e2e
 demo/demo.py                    # in-process demo over synthetic data
+bench/                          # does the semantic layer help an LLM? a paired benchmark (bench/README.md)
+scenarios/                      # 33 sector scenarios over 66M synthetic rows, every answer checked (scenarios/README.md)
 ```
 
 ## Development
 
 ```bash
 uv sync --all-extras
-uv run pytest                    # 900+ tests, coverage gate 80%
+uv run pytest                    # 1400+ tests, coverage gate 80%
 uv run ruff check fusion tests demo && uv run ruff format --check fusion tests demo
 uv run mypy fusion               # strict on domain/ports/application
 uv run python -m demo.demo       # demo with synthetic data (--scale 0.1 for a quick run)
+uv run python -m scenarios run --scale 0.1   # sector scenarios against an oracle (--scale 1 is 66M rows)
 ```
 
 ## Requirements

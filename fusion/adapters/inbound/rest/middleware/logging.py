@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,16 @@ class StructuredLoggingMiddleware(BaseHTTPMiddleware):
         started = time.perf_counter()
         request_id = _sanitize(request.headers.get("X-Request-ID")) or uuid.uuid4().hex
 
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        except Exception:
+            # Without this the failure leaves no access line and no request id,
+            # which are the two things needed to find it afterwards.
+            logger.exception("Unhandled error (request_id=%s)", request_id)
+            response = JSONResponse(
+                status_code=500,
+                content={"error": "Internal server error", "request_id": request_id},
+            )
 
         entry = {
             "request_id": request_id,

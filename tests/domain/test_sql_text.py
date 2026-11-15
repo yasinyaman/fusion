@@ -7,7 +7,6 @@ from fusion.domain.sql_text import (
     find_forbidden_function,
     has_multiple_statements,
     normalize_sql_for_cache,
-    starts_with_dangerous_keyword,
     strip_comments,
     strip_string_literals,
 )
@@ -58,14 +57,6 @@ class TestForbiddenFunctions:
 
     def test_inside_string_literal_is_allowed(self):
         assert find_forbidden_function("SELECT * FROM t WHERE note = 'read_csv('") is None
-
-
-class TestDangerousKeyword:
-    def test_detects(self):
-        assert starts_with_dangerous_keyword("  drop table t") == "DROP"
-
-    def test_select_is_fine(self):
-        assert starts_with_dangerous_keyword("SELECT 1") is None
 
 
 class TestNormalizeForCache:

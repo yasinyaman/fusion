@@ -385,7 +385,11 @@ class TestHelpers:
             ([True, False], "boolean"),
             (["a", 1], "varchar"),
             ([None, None], "varchar"),
-            (["2024-01-01"], "varchar"),
+            # ISO strings are what JSON makes of dates: a date column, so a range
+            # on it can still be sent to the source.
+            (["2024-01-01"], "date"),
+            (["2024-01-01", "2024-01-02 10:00:00"], "timestamp"),
+            (["2024-01-01", "soon"], "varchar"),
         ],
     )
     def test_infer_column_type(self, values, expected):

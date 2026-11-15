@@ -1,4 +1,4 @@
-"""Fusion demo — lazy loading, cross-source federation and the 10 LLM tools.
+"""Fusion demo — lazy loading, cross-source federation and the 12 LLM tools.
 
 Runs entirely in-process: synthetic pandas DataFrames stand in for three
 Warp databases through ``FrameSource``, a tiny DataSource adapter. Everything
@@ -211,7 +211,7 @@ def run_demo(scale: float = 1.0, quiet: bool = False) -> dict[str, Any]:
     facts: dict[str, Any] = {}
 
     say("=" * 70)
-    say("  Fusion demo — lazy loading, federation, 10 LLM tools")
+    say("  Fusion demo — lazy loading, federation, 12 LLM tools")
     say("=" * 70)
 
     say("\n[1/9] Generating synthetic data...")
@@ -273,19 +273,27 @@ def run_demo(scale: float = 1.0, quiet: bool = False) -> dict[str, Any]:
 
         say("\n[6/9] Cross-source federation — JOIN across three 'databases'...")
         t0 = time.perf_counter()
+        # Payments and volume are counted before sessions are joined in: a
+        # user has many sessions, and joining them first would count each
+        # payment once per session.
         result = app.query.sql(
-            "SELECT t.method, COUNT(*) AS payments, ROUND(SUM(o.amount), 2) AS volume, "
-            "COUNT(DISTINCT s.device) AS devices "
-            "FROM warp_finance.transactions t "
-            "JOIN warp_ecommerce.orders o ON t.order_id = o.id "
-            "JOIN warp_analytics.sessions s ON s.user_id = o.user_id "
-            "GROUP BY t.method ORDER BY volume DESC"
+            "WITH pay AS ("
+            "  SELECT t.method, COUNT(*) AS payments, ROUND(SUM(o.amount), 2) AS volume"
+            "  FROM warp_finance.transactions t"
+            "  JOIN warp_ecommerce.orders o ON t.order_id = o.id GROUP BY t.method"
+            "), dev AS ("
+            "  SELECT t.method, COUNT(DISTINCT s.device) AS devices"
+            "  FROM warp_finance.transactions t"
+            "  JOIN warp_ecommerce.orders o ON t.order_id = o.id"
+            "  JOIN warp_analytics.sessions s ON s.user_id = o.user_id GROUP BY t.method"
+            ") SELECT pay.method, payments, volume, devices FROM pay JOIN dev USING (method) "
+            "ORDER BY volume DESC"
         )
         say(f"  {result.row_count} rows in {_ms(t0)}")
         say(result.to_markdown())
         facts["federation_rows"] = result.row_count
 
-        say("\n[7/9] Tools — the same 10 tools an LLM calls (MCP / OpenAI)...")
+        say("\n[7/9] Tools — the same 12 tools an LLM calls (MCP / OpenAI)...")
         say(f"  OpenAI tool defs: {len(get_openai_tools())}, MCP tool defs: {len(get_mcp_tools())}")
         agg = app.tools.execute(
             "aggregate_data",

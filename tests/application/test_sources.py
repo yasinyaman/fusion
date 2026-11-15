@@ -1,6 +1,7 @@
 """Tests for SourceService."""
 
 import json
+import threading
 from dataclasses import replace
 
 import pytest
@@ -66,6 +67,28 @@ class TestEnsureLoaded:
         assert app.catalog.is_loaded("db.users")
         assert app.store.count("db.users") == 5
         assert app.sources.ensure_loaded(["db.users"]) == []
+        assert len(factory.sources["db"].calls_named("fetch_slice")) == 1
+
+    def test_concurrent_first_queries_load_the_table_once(self, app, factory):
+        """Regression: racing loads shared one staging table and lost the table."""
+        rows = [{"id": i, "amount": i * 1.5} for i in range(20000)]
+        app.sources.connect("db", {"type": "fake", "tables": {"big": rows}})
+        errors: list[Exception] = []
+
+        def query() -> None:
+            try:
+                app.query.sql("SELECT COUNT(*) FROM db.big", use_cache=False)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=query) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []
+        assert app.store.count("db.big") == len(rows)
         assert len(factory.sources["db"].calls_named("fetch_slice")) == 1
 
     def test_unknown_source_is_skipped(self, app):
@@ -232,7 +255,11 @@ class TestSlices:
         plan = self._plan(SliceSpec.FULL, "load_full")
         sliced.sources.ensure_slices([plan])
         factory.sources["db"].set_table("users", [{"id": 9, "name": "Zoe", "segment": "basic"}])
+        # A load_full plan for a table already loaded is satisfied, not redone;
+        # a reload is what a refresh asks for.
         sliced.sources.ensure_slices([plan])
+        assert len(factory.sources["db"].calls_named("fetch_slice")) == 1
+        sliced.sources.refresh_tables(["db.users"])
         assert sliced.store.execute("SELECT name FROM db.users").rows == [("Zoe",)]
 
     def test_evict_slice_drops_the_table_and_forgets_it(self, sliced):
@@ -281,10 +308,15 @@ class TestSlices:
                 return None
 
         factory.sources["db"].fetch_slice = lambda *a, **k: Capped()
-        sliced.sources.ensure_slices([self._plan(SliceSpec.FULL, "load_full")])
+        # Whole: refused, since every answer over the first N rows is short.
+        with pytest.raises(QueryError, match="export limit of 2 rows"):
+            sliced.sources.ensure_slices([self._plan(SliceSpec.FULL, "load_full")])
+        assert sliced.catalog.slices_of("db.users") == []
+        # A slice: kept, but marked so that it never answers a narrower query.
+        sliced.sources.ensure_slices([self._plan()])
         loaded = sliced.catalog.slices_of("db.users")[0]
         assert loaded.complete is False
-        assert not sliced.catalog.is_loaded("db.users")  # never answers a narrower query
+        assert not sliced.catalog.is_loaded("db.users")
 
 
 ORDERS_V2 = [
@@ -325,7 +357,7 @@ class TestIncrementalRefresh:
         app.sources.refresh_all()
         assert self._rows(app) == [(1, 100.0), (2, 50.0), (3, 7.0)]
         fetches = [c for c in factory.sources["db"].calls_named("fetch_slice") if c[1] == "orders"]
-        assert fetches[-1][2].predicates == (Predicate("updated_at", "gt", 20),)
+        assert fetches[-1][2].predicates == (Predicate("updated_at", "gte", 20),)
 
     def test_an_updated_row_replaces_its_old_copy(self, app, factory):
         factory.sources["db"].set_table(
@@ -463,5 +495,5 @@ class TestStreamTypesWin:
 
         factory.sources["db"].fetch_slice = lambda *a, **k: Typed()
         app.sources.ensure_loaded(["db.t"])
-        assert [c.type for c in app.store.describe("db.t")] == ["BIGINT"]
+        assert [c.type for c in app.store.describe("db.t")] == ["INTEGER"]
         assert app.store.execute("SELECT SUM(n) FROM db.t").rows == [(3,)]

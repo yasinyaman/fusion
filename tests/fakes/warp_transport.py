@@ -13,7 +13,7 @@ import io
 import json
 import re
 from collections.abc import Iterator, Mapping
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -166,7 +166,33 @@ def _coerce(text: str, sample: Any) -> Any:
             return float(text)
         except ValueError:
             return text
+    if isinstance(sample, datetime):
+        # A database reads a timestamp literal with its offset; a zoned column
+        # compares instants, a naive one wall-clock times.
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return text
+        if sample.tzinfo is not None and parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        if sample.tzinfo is None and parsed.tzinfo is not None:
+            return parsed.replace(tzinfo=None)
+        return parsed
+    if isinstance(sample, str) and _UUID.fullmatch(sample) and _UUID.fullmatch(text):
+        return text.lower()  # a uuid column: hex digits in either case are the same value
     return text
+
+
+#: The ``kind`` Warp reports for a declared type the samples cannot show.
+_DECLARED_KINDS = {
+    "uuid": "uuid",
+    "timestamp with time zone": "datetime",
+    "timestamptz": "datetime",
+    "smallint": "int",
+    "date": "date",
+}
+
+_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 
 def _match(value: Any, op: str, wanted: Any) -> bool:
@@ -332,6 +358,7 @@ class FakeWarpTransport:
         arrow: bool = True,
         broken_arrow: bytes | None = None,
         row_estimates: Mapping[str, int] | None = None,
+        column_types: Mapping[str, Mapping[str, str]] | None = None,
     ) -> None:
         self.db = {k: list(v) for k, v in db.items()}
         self.database = database
@@ -350,6 +377,8 @@ class FakeWarpTransport:
         self.broken_arrow = broken_arrow
         #: Pretend a table is huge (reported by /schema) without holding rows.
         self.row_estimates = dict(row_estimates or {})
+        #: table -> column -> the type /schema reports, as a real database names it.
+        self.column_types = {t: dict(c) for t, c in (column_types or {}).items()}
         self.requests: list[tuple[str, str, dict[str, Any]]] = []
         self.failures: list[HttpTransportError] = []
         self.closed = False
@@ -515,13 +544,15 @@ class FakeWarpTransport:
                 if key not in columns or columns[key] == "str":
                     columns[key] = _KINDS.get(type(value), "str") if value is not None else "str"
         estimate = self.row_estimates.get(table, len(rows))
+        declared = self.column_types.get(table, {})
         return {
             "table": table,
             "columns": [
                 {
                     "name": name,
-                    "type": kind,
-                    "kind": kind,
+                    "type": declared.get(name, kind),
+                    # Warp's own kind for the declared type (warp.domain.sql_types).
+                    "kind": _DECLARED_KINDS.get(declared.get(name, ""), kind),
                     "nullable": any(r.get(name) is None for r in rows),
                 }
                 for name, kind in columns.items()

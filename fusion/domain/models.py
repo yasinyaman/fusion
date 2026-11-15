@@ -37,8 +37,11 @@ class TableRef:
 
     @property
     def is_view(self) -> bool:
-        """Materialized views live in DuckDB only and are named ``mv_*``."""
-        return self.table.startswith(MV_PREFIX)
+        """Materialized views live in DuckDB only, unqualified and named ``mv_*``.
+
+        ``db.mv_daily`` is a source's own table that happens to share the prefix.
+        """
+        return not self.source and self.table.startswith(MV_PREFIX)
 
     @classmethod
     def parse(cls, text: str) -> TableRef:

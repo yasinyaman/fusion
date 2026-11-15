@@ -10,6 +10,9 @@ from fusion.domain.models import MV_PREFIX
 PRIORITY_ORDER = {"critical": 0, "high": 1, "normal": 2, "low": 3}
 
 _EVERY_RE = re.compile(r"every\s+(\d+)\s+(second|minute|hour|day)s?")
+
+#: Shortest scheduled refresh: every run re-reads the view's source tables.
+MIN_REFRESH_SECONDS = 30
 _UNIT_SECONDS = {"second": 1, "minute": 60, "hour": 3600, "day": 86400}
 
 
@@ -54,7 +57,7 @@ def parse_refresh_interval(refresh: str) -> int:
         return 3600
     if text == "daily":
         return 86400
-    match = _EVERY_RE.match(text)
+    match = _EVERY_RE.fullmatch(text)
     if match:
         return int(match.group(1)) * _UNIT_SECONDS[match.group(2)]
     return 0

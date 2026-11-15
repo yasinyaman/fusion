@@ -96,8 +96,10 @@ class TestScheduledRefresh:
         app_with_data.views.drop("v")
         assert job.cancelled
 
-    def test_unknown_interval_is_manual(self, app_with_data, scheduler):
-        app_with_data.views.create("v", "SELECT 1", refresh="whenever")
+    def test_unknown_interval_is_refused(self, app_with_data, scheduler):
+        # It used to become manual with a log line: a view that never refreshes.
+        with pytest.raises(QueryError, match="Unknown refresh interval"):
+            app_with_data.views.create("v", "SELECT 1", refresh="every 5 minutes please")
         assert scheduler.jobs == []
 
     def test_close_cancels_jobs(self, app_with_data, scheduler):

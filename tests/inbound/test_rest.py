@@ -51,7 +51,7 @@ class TestHealth:
 class TestTools:
     def test_list_tools(self, client):
         data = client.get("/tools").json()
-        assert data["count"] == 10
+        assert data["count"] == 12
         assert {t["name"] for t in data["tools"]} >= {"query_data", "list_sources", "cache_stats"}
 
     def test_dispatch(self, client):
@@ -210,13 +210,16 @@ class TestRateLimit:
         return req
 
     def test_uses_api_key_when_present(self):
-        key = rate_limit_key(self._req(api_key="secret-abc"))
+        key = rate_limit_key(self._req(api_key="secret-abc"), "secret-abc")
         assert key.startswith("key:")
-        assert rate_limit_key(self._req(api_key="secret-abc")) == key
+        assert rate_limit_key(self._req(api_key="secret-abc"), "secret-abc") == key
         assert "secret-abc" not in key
 
-    def test_distinguishes_api_keys(self):
-        assert rate_limit_key(self._req(api_key="aaa")) != rate_limit_key(self._req(api_key="bbb"))
+    def test_a_key_that_is_not_the_configured_one_buys_no_bucket(self):
+        # Otherwise every made-up header value starts a fresh allowance.
+        for configured in ("secret-abc", ""):
+            assert rate_limit_key(self._req(api_key="aaa"), configured) == "9.9.9.9"
+            assert rate_limit_key(self._req(api_key="bbb"), configured) == "9.9.9.9"
 
     def test_falls_back_to_client_ip(self):
         assert rate_limit_key(self._req(host="1.2.3.4")) == "1.2.3.4"

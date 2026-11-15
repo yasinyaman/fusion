@@ -13,7 +13,7 @@ import requests
 
 from fusion.adapters.outbound.warp.circuit_breaker import CircuitBreaker
 from fusion.adapters.outbound.warp.connection_pool import ConnectionPool
-from fusion.domain.errors import ConnectionError
+from fusion.domain.errors import ConnectionError, QueryError
 from fusion.domain.slices import Predicate, SliceSpec
 
 logger = logging.getLogger(__name__)
@@ -28,28 +28,42 @@ MAX_GET_URL_LENGTH = 6000
 #: Long ``IN`` lists go in a POST body even when the URL would still fit.
 MAX_GET_IN_VALUES = 50
 
+RAW_QUERY_PATH = "/query/execute"
+
 # Cloud metadata hostnames that must never be contacted (SSRF targets).
 _BLOCKED_HOSTNAMES = frozenset({"metadata.google.internal", "metadata.goog"})
+
+#: Cloud metadata endpoints outside the link-local ranges: AWS's IPv6 IMDS
+#: (fd00:ec2::254, a unique-local address) and Alibaba Cloud's (100.100.100.200).
+_METADATA_ADDRESSES = frozenset(
+    {ipaddress.ip_address("fd00:ec2::254"), ipaddress.ip_address("100.100.100.200")}
+)
 
 
 class HttpTransportError(ConnectionError):
     """An HTTP request to Warp failed (network error or non-2xx status)."""
 
-    def __init__(self, message: str, status: int | None = None) -> None:
+    def __init__(self, message: str, status: int | None = None, url: str = "") -> None:
         super().__init__(message)
         self.status = status
+        self.url = url
 
 
 def is_transport_failure(exc: BaseException) -> bool:
     """Whether an exception should count against the circuit breaker.
 
     A 4xx answer proves Warp is up and talking (a bad table name, a refused
-    raw query, ...); only network errors, 5xx, 408 (timeout) and 429
-    (overload) indicate the service itself is struggling.
+    raw query, ...). So does a 500: Warp answers it on every route when the
+    *database* rejects the statement (a bad cast, a statement timeout), and
+    counting those would let five bad requests cut the source off for
+    everyone. Network errors, 502/503/504, 408 (timeout) and 429 (overload)
+    are what say the service itself is struggling.
     """
     if isinstance(exc, HttpTransportError) and exc.status is not None:
         status = exc.status
-        return not (400 <= status < 500 and status not in (408, 429))
+        if status in (408, 429) or status >= 502:
+            return True
+        return False
     return True
 
 
@@ -60,9 +74,12 @@ def _is_blocked_ip(host: str) -> bool:
     on localhost or a private Docker network.
     """
     try:
-        return ipaddress.ip_address(host).is_link_local
+        address = ipaddress.ip_address(host.split("%")[0])  # drop an IPv6 zone id
     except ValueError:
         return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped  # ::ffff:169.254.169.254 is the IPv4 address
+    return address.is_link_local or address in _METADATA_ADDRESSES
 
 
 def validate_base_url(url: str) -> None:
@@ -78,12 +95,14 @@ def validate_base_url(url: str) -> None:
     if host.lower() in _BLOCKED_HOSTNAMES or _is_blocked_ip(host):
         raise ConnectionError(f"Blocked Warp host '{host}' (cloud metadata / link-local address).")
     try:
-        resolved = socket.gethostbyname(host)
+        # Every address the name has, IPv6 included, not only the first IPv4.
+        resolved = {info[4][0] for info in socket.getaddrinfo(host, None)}
     except OSError:
-        resolved = None
-    if resolved and _is_blocked_ip(resolved):
+        resolved = set()  # unresolvable now: the connection itself will fail
+    blocked = sorted(str(a) for a in resolved if _is_blocked_ip(str(a)))
+    if blocked:
         raise ConnectionError(
-            f"Blocked Warp host '{host}' (resolves to link-local address {resolved})."
+            f"Blocked Warp host '{host}' (resolves to metadata/link-local address {blocked[0]})."
         )
 
 
@@ -146,7 +165,8 @@ class PooledHttpTransport:
         return self._guarded(self._pool.get, url, params=dict(params or {}), timeout=timeout)
 
     def post_json(self, url: str, payload: Mapping[str, Any], timeout: float | None = None) -> Any:
-        return self._guarded(self._pool.post, url, json=dict(payload), timeout=timeout)
+        # Sent once: a raw query is not safe to repeat (see ConnectionPool).
+        return self._guarded(self._pool.post, url, json=dict(payload), timeout=timeout, once=True)
 
     def get_stream(
         self, url: str, params: Mapping[str, Any] | None = None, timeout: float | None = None
@@ -182,7 +202,9 @@ class PooledHttpTransport:
                 return do_request()
             except requests.HTTPError as e:
                 status = e.response.status_code if e.response is not None else None
-                raise HttpTransportError(f"HTTP {status} from {url}: {e}", status=status) from e
+                raise HttpTransportError(
+                    f"HTTP {status} from {url}: {e}", status=status, url=url
+                ) from e
             except requests.RequestException as e:
                 raise HttpTransportError(f"Request to {url} failed: {e}") from e
 
@@ -309,7 +331,7 @@ class WarpHttpClient:
         if params:
             payload["params"] = dict(params)
         return self._transport.post_json(
-            f"{self.api_root}/query/execute", payload, timeout=self.timeout
+            f"{self.api_root}{RAW_QUERY_PATH}", payload, timeout=self.timeout
         )
 
     def close(self) -> None:
@@ -321,18 +343,50 @@ def _normalize_prefix(prefix: str) -> str:
     return f"/{stripped}" if stripped else ""
 
 
+def _json_scalar(value: Any) -> Any:
+    """Join keys read back from the store may be Decimal, date or UUID."""
+    return value if value is None or isinstance(value, bool | int | float | str) else str(value)
+
+
 def _wire_value(predicate: Predicate) -> Any:
     """JSON representation of a predicate value (tuples are not JSON)."""
     if predicate.op == "in":
-        return list(predicate.value)
-    return predicate.value
+        return [_json_scalar(v) for v in predicate.value]
+    return _json_scalar(predicate.value)
+
+
+def _in_needs_body(predicate: Predicate) -> bool:
+    """Warp splits a query-string ``in`` on commas and trims each piece."""
+    return predicate.op == "in" and any(
+        isinstance(v, str) and ("," in v or v != v.strip()) for v in predicate.value
+    )
+
+
+def _repeats_a_key(predicates: Sequence[Predicate]) -> bool:
+    """Two predicates with one column and operator share one query parameter."""
+    keys = [(p.column, p.op) for p in predicates]
+    return len(set(keys)) != len(keys)
 
 
 def filter_params(predicates: Sequence[Predicate]) -> dict[str, str]:
     """Encode predicates as Warp's ``filter[column][op]=value`` query parameters."""
+    if _repeats_a_key(predicates):
+        # The second would overwrite the first, and the source would send rows
+        # that only meet one of them — fatal once a LIMIT is read there too.
+        raise QueryError(
+            "Cannot send two conditions with the same column and operator on this "
+            "Warp: its URL filters hold one value per column and operator. Enable "
+            "Warp's export endpoint."
+        )
     params: dict[str, str] = {}
     for predicate in predicates:
         key = f"filter[{predicate.column}][{predicate.op}]"
+        if _in_needs_body(predicate):
+            raise QueryError(
+                f"Cannot filter '{predicate.column}' by a value containing a comma or "
+                "outer spaces on this Warp: it reads such a list from the URL and "
+                "would split the value. Enable Warp's export endpoint."
+            )
         if predicate.op == "in":
             params[key] = ",".join(_scalar_text(v) for v in predicate.value)
         elif predicate.op == "is_null":
@@ -356,8 +410,12 @@ def _fits_in_url(
     limit: int | None,
 ) -> bool:
     """Whether this slice can be requested with a GET."""
+    if _repeats_a_key(spec.predicates):
+        return False
     for predicate in spec.predicates:
         if predicate.op == "in" and len(predicate.value) > MAX_GET_IN_VALUES:
+            return False
+        if _in_needs_body(predicate):
             return False
     params: dict[str, Any] = {"format": fmt}
     if fields:

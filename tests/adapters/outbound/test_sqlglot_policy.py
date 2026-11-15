@@ -32,6 +32,7 @@ class TestValidatorAllows:
             GROUP BY u.name HAVING COUNT(*) > 1 ORDER BY total DESC LIMIT 10
             """,
             "EXPLAIN SELECT 1",
+            "EXPLAIN ANALYZE SELECT 1",
             "SELECT COUNT(*) FROM orders WHERE amount > 100",
             "SELECT read_count FROM metrics",
             "SELECT * FROM logs WHERE message = 'tried read_csv( here'",
@@ -73,12 +74,38 @@ class TestSetOperations:
             validator.validate(sql)
 
 
+class TestWritesInsideAQuery:
+    """A data-modifying CTE is a query outside and a write inside."""
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x",
+            "WITH x AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM x",
+            "WITH x AS (UPDATE t SET a = 1 RETURNING *) SELECT * FROM x",
+            "WITH a AS (SELECT 1), x AS (DELETE FROM t RETURNING *) SELECT * FROM a",
+        ],
+    )
+    def test_is_blocked(self, sql):
+        with pytest.raises(GuardrailViolation, match="inside a query"):
+            SqlglotValidator().validate(sql)
+
+    def test_the_words_in_a_string_are_still_fine(self):
+        SqlglotValidator().validate("SELECT 'DELETE FROM t' AS s")
+
+
 class TestValidatorBlocks:
     @pytest.mark.parametrize(
         "sql",
         [
             "DROP TABLE users",
             "DELETE FROM orders WHERE 1=1",
+            # EXPLAIN ANALYZE executes the statement it explains.
+            "EXPLAIN ANALYZE DELETE FROM orders WHERE 1=1",
+            "explain  analyze\nDROP TABLE users",
+            "EXPLAIN UPDATE users SET name = 'hack'",
+            "EXPLAIN EXPLAIN ANALYZE CREATE TABLE x AS SELECT 1",
+            "/* c */ EXPLAIN ANALYZE DELETE FROM orders",
             "INSERT INTO users VALUES (1, 'hack')",
             "UPDATE users SET name = 'hack'",
             "ALTER TABLE users ADD COLUMN evil TEXT",

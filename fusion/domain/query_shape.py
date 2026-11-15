@@ -123,6 +123,50 @@ class QueryShape:
         """Inner-join equalities touching ``alias`` (safe for key passing)."""
         return tuple(j for j in self.joins if j.inner and j.column_for(alias) is not None)
 
+    def merge_conservative(self, other: QueryShape) -> QueryShape:
+        """Combine two shapes of the same query, keeping whichever fetches more.
+
+        Used to cross-check a shape derived from a semantic query against the
+        one the analyzer reads back out of the generated scan. A disagreement
+        must never cost rows, so columns are unioned (``None``, meaning "every
+        column", wins) and predicates intersected — only a condition *both*
+        sides agree on may narrow the fetch.
+
+        When ``other`` gave up (``is_simple_select=False``) there is nothing to
+        learn from it, so this shape is returned unchanged and the caller logs
+        the disagreement.
+        """
+        if not other.is_simple_select:
+            return self
+        merged = []
+        for use in self.tables:
+            theirs = other.use_for(use.ref)
+            if theirs is None:
+                merged.append(use)
+                continue
+            columns = (
+                None
+                if use.columns is None or theirs.columns is None
+                else use.columns | theirs.columns
+            )
+            merged.append(
+                TableUse(
+                    ref=use.ref,
+                    alias=use.alias,
+                    columns=columns,
+                    predicates=tuple(p for p in use.predicates if p in theirs.predicates),
+                    outer_null_side=use.outer_null_side or theirs.outer_null_side,
+                )
+            )
+        return QueryShape(
+            tables=tuple(merged),
+            joins=self.joins,
+            limit=self.limit,
+            is_simple_select=self.is_simple_select,
+            is_ordered=self.is_ordered,
+            is_aggregated=self.is_aggregated,
+        )
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "is_simple_select": self.is_simple_select,

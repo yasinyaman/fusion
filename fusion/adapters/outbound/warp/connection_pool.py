@@ -47,8 +47,11 @@ class ConnectionPool:
         retry = Retry(
             total=max_retries,
             backoff_factor=backoff_factor,
-            status_forcelist=[429, 500, 502, 503, 504],
-            allowed_methods=["HEAD", "GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            # Not 500: Warp answers it when the database rejected the request,
+            # and asking again gets the same answer.
+            status_forcelist=[429, 502, 503, 504],
+            # POST too: a keyed export (every semi-join chunk) is a read.
+            allowed_methods=["HEAD", "GET", "OPTIONS", "POST"],
             # Return the last response instead of raising MaxRetryError so the
             # caller sees the real status code via raise_for_status().
             raise_on_status=False,
@@ -60,6 +63,15 @@ class ConnectionPool:
         )
         self.session.mount("http://", adapter)
         self.session.mount("https://", adapter)
+        # A raw query is sent once: re-sending one that failed runs it again on
+        # the database, and one that timed out runs beside the copy still
+        # executing there. Same headers, no retries.
+        self._once = requests.Session()
+        self._once.max_redirects = 0
+        self._once.headers.update(self.session.headers)
+        once = HTTPAdapter(pool_connections=1, pool_maxsize=pool_size, max_retries=0)
+        self._once.mount("http://", once)
+        self._once.mount("https://", once)
         logger.info(
             "ConnectionPool initialized: pool_size=%d, max_retries=%d, timeout=%ss",
             pool_size,
@@ -68,12 +80,20 @@ class ConnectionPool:
         )
 
     def request(
-        self, method: str, url: str, timeout: float | None = None, **kwargs: Any
+        self,
+        method: str,
+        url: str,
+        timeout: float | None = None,
+        once: bool = False,
+        **kwargs: Any,
     ) -> requests.Response:
-        """Perform a request and raise ``requests.RequestException`` on failure."""
+        """Perform a request and raise ``requests.RequestException`` on failure.
+
+        ``once`` sends it without retries (a raw query).
+        """
         started = time.time()
         try:
-            response = self.session.request(
+            response = (self._once if once else self.session).request(
                 method=method,
                 url=url,
                 timeout=timeout or self.timeout,
@@ -112,6 +132,7 @@ class ConnectionPool:
 
     def close(self) -> None:
         self.session.close()
+        self._once.close()
         logger.info("ConnectionPool closed")
 
     def __enter__(self) -> ConnectionPool:
