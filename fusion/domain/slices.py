@@ -19,7 +19,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, ClassVar, Literal
 
-from fusion.domain.models import TableRef
+from fusion.domain.models import ColumnInfo, TableRef, TableSchema
 
 PredicateOp = Literal["eq", "ne", "gt", "gte", "lt", "lte", "like", "in", "is_null"]
 
@@ -339,6 +339,31 @@ def merge_same_key(predicates: Sequence[Predicate]) -> tuple[tuple[Predicate, ..
         else:
             exact = False
     return tuple(merged.values()), exact
+
+
+def ingest_schema(
+    announced: TableSchema | None, declared: TableSchema | None
+) -> TableSchema | None:
+    """The column types a slice is stored with.
+
+    What the stream announced wins (Arrow carries decimals, widths and zones),
+    except where it sent text for a column the source declared as a UUID: a
+    UUID kept as text compares as text, so ``= 'F4…'`` misses the row the
+    source matched case-insensitively and a slice silently loses it.
+    Without an announcement, the declared types are used as they are.
+    """
+    if announced is None or not announced.columns:
+        return declared
+    if declared is None:
+        return announced
+    declared_types = {c.name.lower(): c.type for c in declared.columns}
+    columns = []
+    for column in announced.columns:
+        source_type = declared_types.get(column.name.lower())
+        if column_kind(column.type) == "text" and column_kind(source_type) == "uuid":
+            column = ColumnInfo(column.name, source_type or column.type, column.nullable)
+        columns.append(column)
+    return TableSchema(columns=columns)
 
 
 def predicate_is_pushable(predicate: Predicate, column_type: str | None) -> bool:

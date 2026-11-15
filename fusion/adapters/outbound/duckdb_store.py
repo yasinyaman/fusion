@@ -37,14 +37,20 @@ logger = logging.getLogger(__name__)
 
 _SIZE_RE = re.compile(r"^\d+(\.\d+)?\s*(B|KB|MB|GB|TB|KiB|MiB|GiB|TiB)?$", re.IGNORECASE)
 
+#: Source type name -> the column type the store creates. Integers keep the
+#: width the source declared: widening ``smallint`` to ``BIGINT`` turns
+#: ``date_col + smallint_col``, valid at the source, into a binder error here.
 _SQL_TYPES = {
-    "integer": "BIGINT",
-    "int": "BIGINT",
-    "int2": "BIGINT",
-    "int4": "BIGINT",
+    "integer": "INTEGER",
+    "int": "INTEGER",
+    "int2": "SMALLINT",
+    "int4": "INTEGER",
     "int8": "BIGINT",
-    "smallint": "BIGINT",
+    "smallint": "SMALLINT",
+    "tinyint": "SMALLINT",
     "bigint": "BIGINT",
+    "ubigint": "UBIGINT",
+    "hugeint": "HUGEINT",
     "double": "DOUBLE",
     "double precision": "DOUBLE",
     "float": "DOUBLE",
@@ -63,7 +69,13 @@ _SQL_TYPES = {
     "bytes": "BLOB",
     "bytea": "BLOB",
     "json": "JSON",
+    "uuid": "UUID",
 }
+
+#: ``decimal(12,2)`` / ``numeric(12, 2)`` / ``numeric(12)``.
+_DECIMAL_TYPE = re.compile(r"(?:decimal|numeric)\s*\(\s*(\d+)\s*(?:,\s*(\d+)\s*)?\)")
+#: A length or precision argument: ``varchar(255)``, ``timestamp(6) with time zone``.
+_TYPE_ARGUMENTS = re.compile(r"\s*\([^)]*\)")
 
 
 def _quote(identifier: str) -> str:
@@ -603,7 +615,23 @@ def _validate_plain_identifier(name: str, label: str) -> None:
 
 
 def _sql_type(type_name: str) -> str:
-    return _SQL_TYPES.get(type_name.lower(), "VARCHAR")
+    """The store's column type for a source type name; VARCHAR when unknown.
+
+    A decimal keeps its precision and scale. Any other argument (a length, a
+    fractional-seconds precision) is dropped before the lookup, so
+    ``varchar(255)`` is VARCHAR and ``timestamp(6) with time zone`` TIMESTAMPTZ.
+    """
+    name = type_name.strip().lower()
+    known = _SQL_TYPES.get(name)
+    if known is not None:
+        return known
+    decimal = _DECIMAL_TYPE.fullmatch(name)
+    if decimal:
+        precision, scale = int(decimal.group(1)), int(decimal.group(2) or 0)
+        if 0 < precision <= 38 and scale <= precision:
+            return f"DECIMAL({precision},{scale})"
+        return "DOUBLE"
+    return _SQL_TYPES.get(" ".join(_TYPE_ARGUMENTS.sub("", name).split()), "VARCHAR")
 
 
 def _rowset_to_arrow(rows: RowSet) -> pa.Table:

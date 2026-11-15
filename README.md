@@ -2,7 +2,7 @@
 
 **DuckDB-powered in-memory analytics engine with LLM tool support.**
 
-Fusion connects to PostgreSQL/MySQL databases through the [Warp](https://github.com/yasinyaman/warp) REST API, lazily loads the tables a query needs into DuckDB, and exposes 10 analytics tools to LLMs over MCP, a REST API and a Python SDK.
+Fusion connects to PostgreSQL/MySQL databases through the [Warp](https://github.com/yasinyaman/warp) REST API, lazily loads the tables a query needs into DuckDB, and exposes 12 analytics tools to LLMs over MCP, a REST API and a Python SDK.
 
 ## Features
 
@@ -279,16 +279,19 @@ fusion/
 └── observability/              # logging setup and formatters
 tests/                          # domain, ports (contract tests), adapters, application, inbound, e2e
 demo/demo.py                    # in-process demo over synthetic data
+bench/                          # does the semantic layer help an LLM? a paired benchmark (bench/README.md)
+scenarios/                      # 33 sector scenarios over 66M synthetic rows, every answer checked (scenarios/README.md)
 ```
 
 ## Development
 
 ```bash
 uv sync --all-extras
-uv run pytest                    # 900+ tests, coverage gate 80%
+uv run pytest                    # 1400+ tests, coverage gate 80%
 uv run ruff check fusion tests demo && uv run ruff format --check fusion tests demo
 uv run mypy fusion               # strict on domain/ports/application
 uv run python -m demo.demo       # demo with synthetic data (--scale 0.1 for a quick run)
+uv run python -m scenarios run --scale 0.1   # sector scenarios against an oracle (--scale 1 is 66M rows)
 ```
 
 ## Requirements

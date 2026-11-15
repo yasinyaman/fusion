@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
 
 from fusion.domain.catalog import SchemaCatalog
@@ -221,12 +221,28 @@ class FetchPlanner:
         # DuckDB matches ``Name`` to a column ``name``; a source may not, so the
         # slice names columns as the catalog spells them.
         spelled = self._catalog_spelling(ref)
-        columns = (
-            None
-            if use.columns is None
-            else frozenset(spelled.get(c.lower(), c) for c in use.columns)
-        )
+        columns = self._projection(use.columns, spelled)
         return SliceSpec(columns=columns, predicates=pushable, limit=limit)
+
+    @staticmethod
+    def _projection(
+        referenced: frozenset[str] | None, spelled: Mapping[str, str]
+    ) -> frozenset[str] | None:
+        """The columns to fetch: those the query names that the table really has.
+
+        The analyzer reads names, not schemas, so ``ORDER BY net`` or ``HAVING
+        n > 1`` hands it ``net`` and ``n``: select-list aliases, which no source
+        has. A source that checks its field list (Warp answers 400) would refuse
+        the whole read. When the catalog knows the table, names it does not
+        have are dropped; if nothing is left, every column is read, as for
+        ``SELECT COUNT(*)``.
+        """
+        if referenced is None:
+            return None
+        if not spelled:
+            return frozenset(referenced)
+        kept = frozenset(spelled[c.lower()] for c in referenced if c.lower() in spelled)
+        return kept or None
 
     def _catalog_spelling(self, ref: TableRef) -> dict[str, str]:
         if not self._catalog.has_table(ref):

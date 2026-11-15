@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
@@ -38,24 +39,50 @@ DEFAULT_BATCH_SIZE = 10_000
 PAGED_IN_CHUNK = 200
 
 #: Arrow type prefix -> the type names Fusion's store understands.
+#:
+#: Integers keep their width: a source's ``smallint`` that arrives as ``bigint``
+#: breaks expressions the source accepts (DuckDB has ``DATE + INTEGER``, not
+#: ``DATE + BIGINT``). Unsigned types take the next signed width up, which
+#: holds every value. Checked in order, so the longer prefixes come first.
 _ARROW_KINDS: tuple[tuple[str, str], ...] = (
     ("bool", "boolean"),
-    ("int", "integer"),
-    ("uint", "integer"),
+    ("int8", "smallint"),
+    ("int16", "smallint"),
+    ("int32", "integer"),
+    ("int64", "bigint"),
+    ("uint8", "smallint"),
+    ("uint16", "integer"),
+    ("uint32", "bigint"),
+    ("uint64", "ubigint"),
+    ("halffloat", "double"),
     ("float", "double"),
     ("double", "double"),
-    ("halffloat", "double"),
-    ("decimal", "decimal"),
     ("timestamp", "timestamp"),
     ("date", "date"),
     ("time", "time"),
-    ("binary", "blob"),
     ("fixed_size_binary", "blob"),
+    ("binary", "blob"),
+    ("large_binary", "blob"),
 )
+
+#: ``decimal128(12, 2)``: precision and scale survive, so the store holds
+#: what the source holds (a median rounds to the column's own scale).
+_ARROW_DECIMAL = re.compile(r"decimal(?:32|64|128|256)?\((\d+),\s*(-?\d+)\)")
 
 
 def _arrow_type_name(arrow_type: Any) -> str:
     text = str(arrow_type).lower()
+    decimal = _ARROW_DECIMAL.match(text)
+    if decimal:
+        precision, scale = int(decimal.group(1)), int(decimal.group(2))
+        # DuckDB's DECIMAL stops at 38 digits; wider values fit a double only.
+        if precision <= 38 and 0 <= scale <= precision:
+            return f"decimal({precision},{scale})"
+        return "double"
+    if text.startswith("timestamp") and "tz=" in text:
+        # A zoned timestamp read back without its zone compares a literal's
+        # offset away: '... 00:00+03:00' would mean midnight UTC.
+        return "timestamp with time zone"
     for prefix, name in _ARROW_KINDS:
         if text.startswith(prefix):
             return name

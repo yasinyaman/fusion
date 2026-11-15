@@ -18,6 +18,7 @@ DuckDB-powered in-memory analytics engine — LLM tool for data access via MCP, 
 - Types: `uv run mypy fusion` (strict flags on `domain`, `ports`, `application`)
 - Lock check: `uv lock --check`
 - Demo: `uv run python -m demo.demo --scale 0.1`
+- Scenarios: `uv run --frozen python -m scenarios run --scale 0.1` (`--scale 1` is 66M rows; `pytest scenarios/tests` for the harness)
 - MCP server: `uv run fusion-mcp --warp-url http://localhost:8000 --database mydb`
 - REST server: `uv run fusion-rest --warp-url http://localhost:8000 --auto-discover --port 9000`
 
@@ -96,6 +97,8 @@ tests/
 ├── fakes/                          # FakeDataSource, FakeSourceFactory, FakeWarpTransport (mini SQL), ManualScheduler
 ├── architecture/, domain/, ports/ (contract tests), adapters/, application/, inbound/, e2e/
 └── test_demo.py, test_packaging.py
+scenarios/                          # sector stress scenarios: synth/ (10 deterministic source DBs),
+                                    # cases/ (33 scenarios), harness.py (oracle-checked steps); see its README
 ```
 
 ## Key Classes

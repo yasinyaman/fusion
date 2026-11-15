@@ -495,5 +495,5 @@ class TestStreamTypesWin:
 
         factory.sources["db"].fetch_slice = lambda *a, **k: Typed()
         app.sources.ensure_loaded(["db.t"])
-        assert [c.type for c in app.store.describe("db.t")] == ["BIGINT"]
+        assert [c.type for c in app.store.describe("db.t")] == ["INTEGER"]
         assert app.store.execute("SELECT SUM(n) FROM db.t").rows == [(3,)]

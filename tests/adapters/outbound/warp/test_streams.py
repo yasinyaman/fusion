@@ -44,14 +44,41 @@ class TestArrowRowStream:
         stream, _ = _arrow_stream([{"id": 1, "name": "a", "amount": None}], schema)
         assert stream.columns == ("id", "name", "amount")
         types = {c.name: c.type for c in stream.schema.columns}
-        assert types == {"id": "integer", "name": "varchar", "amount": "decimal"}
+        assert types == {"id": "integer", "name": "varchar", "amount": "decimal(10,2)"}
 
     def test_timestamps_and_binaries_are_recognised(self):
         schema = pa.schema(
             [("ts", pa.timestamp("us", tz="UTC")), ("d", pa.date32()), ("b", pa.binary())]
         )
         stream, _ = _arrow_stream([], schema)
-        assert [c.type for c in stream.schema.columns] == ["timestamp", "date", "blob"]
+        assert [c.type for c in stream.schema.columns] == [
+            "timestamp with time zone",
+            "date",
+            "blob",
+        ]
+
+    def test_integers_keep_their_width(self):
+        schema = pa.schema(
+            [
+                ("a", pa.int16()),
+                ("b", pa.int32()),
+                ("c", pa.int64()),
+                ("d", pa.uint32()),
+                ("e", pa.timestamp("us")),
+            ]
+        )
+        stream, _ = _arrow_stream([], schema)
+        assert [c.type for c in stream.schema.columns] == [
+            "smallint",
+            "integer",
+            "bigint",
+            "bigint",  # every unsigned 32-bit value fits a signed 64-bit one
+            "timestamp",
+        ]
+
+    def test_a_decimal_too_wide_for_the_store_is_a_double(self):
+        stream, _ = _arrow_stream([], pa.schema([("x", pa.decimal256(50, 2))]))
+        assert [c.type for c in stream.schema.columns] == ["double"]
 
     def test_iteration_yields_rowsets(self):
         stream, _ = _arrow_stream(ROWS)

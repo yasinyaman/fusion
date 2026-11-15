@@ -126,6 +126,7 @@ class SqlglotValidator:
                     f"Blocked SELECT ... FOR UPDATE/SHARE: only plain reads are allowed: "
                     f"{original_sql[:100]}"
                 )
+            _check_no_writes_inside(statement, original_sql)
             _check_no_file_access(statement, original_sql)
             return
 
@@ -138,6 +139,32 @@ class SqlglotValidator:
             f"Blocked {type(statement).__name__} statement. Only SELECT queries are allowed: "
             f"{original_sql[:100]}"
         )
+
+
+#: Statements that change something. A query may not contain one anywhere: a
+#: data-modifying CTE (``WITH x AS (DELETE ... RETURNING *) SELECT ...``) is a
+#: query on the outside and a write on the inside.
+_WRITE_NODES: tuple[type, ...] = (
+    exp.Insert,
+    exp.Update,
+    exp.Delete,
+    exp.Merge,
+    exp.Create,
+    exp.Drop,
+    exp.Alter,
+    exp.TruncateTable,
+    exp.Copy,
+    exp.Command,
+)
+
+
+def _check_no_writes_inside(statement: exp.Expr, original_sql: str) -> None:
+    for node in statement.walk():
+        if isinstance(node, _WRITE_NODES):
+            raise GuardrailViolation(
+                f"Blocked {type(node).__name__} inside a query. Only SELECT queries are "
+                f"allowed: {original_sql[:100]}"
+            )
 
 
 #: A table name DuckDB would open as a file or URL instead of looking up.

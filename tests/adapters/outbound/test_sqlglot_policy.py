@@ -74,6 +74,26 @@ class TestSetOperations:
             validator.validate(sql)
 
 
+class TestWritesInsideAQuery:
+    """A data-modifying CTE is a query outside and a write inside."""
+
+    @pytest.mark.parametrize(
+        "sql",
+        [
+            "WITH x AS (DELETE FROM t RETURNING *) SELECT * FROM x",
+            "WITH x AS (INSERT INTO t VALUES (1) RETURNING *) SELECT * FROM x",
+            "WITH x AS (UPDATE t SET a = 1 RETURNING *) SELECT * FROM x",
+            "WITH a AS (SELECT 1), x AS (DELETE FROM t RETURNING *) SELECT * FROM a",
+        ],
+    )
+    def test_is_blocked(self, sql):
+        with pytest.raises(GuardrailViolation, match="inside a query"):
+            SqlglotValidator().validate(sql)
+
+    def test_the_words_in_a_string_are_still_fine(self):
+        SqlglotValidator().validate("SELECT 'DELETE FROM t' AS s")
+
+
 class TestValidatorBlocks:
     @pytest.mark.parametrize(
         "sql",

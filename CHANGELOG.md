@@ -25,7 +25,21 @@ All notable changes to Fusion OLAP Engine.
   gave the best DSL arm at 7b and tied the catalog-SQL arm (and did worse
   than no model at all at 1.5b)
 
+- **`scenarios/`: sector scenarios that stress the whole engine.** Ten
+  synthetic source databases for banking, retail, telecom, healthcare,
+  manufacturing and logistics (66M rows at scale 1.0, deterministic), and 33
+  scenarios that drive every branch of the planner — slices, reuse, semi-joins,
+  refusals, pushdown, federation, the semantic layer, views, incremental
+  refresh, eviction, concurrency, guardrails, timeouts and REST — with every
+  answer checked against the source data itself. `python -m scenarios run`;
+  `python -m scenarios export` writes a Postgres + MySQL + Warp stack for the
+  same scenarios. See `scenarios/README.md`. The first run found the four
+  issues fixed below
+
 ### Security
+- **A write could ride inside a query.** `WITH x AS (DELETE ... RETURNING *) SELECT * FROM x`
+  is a query on the outside, so it passed the guardrail, its tables were fetched, and only
+  DuckDB's parser stopped it. Any write node anywhere in a query is now refused before planning.
 - **A second statement could hide behind a DuckDB escape string.** `SELECT E'\'' ; DROP TABLE ...` passed the guardrail (which parsed SQL in sqlglot's generic dialect) and DuckDB ran the DROP. User SQL is now parsed strictly as DuckDB, so a statement the parser cannot read whole is refused and every statement in it is seen. The analyzer reads the same dialect, which also stops it pushing a condition that sits under an `OR` hidden that way, or slicing a `POSITIONAL JOIN`.
 - `SELECT ... FOR UPDATE/SHARE` is refused (pushed down, it took row locks at the source).
 - Request bodies over `FUSION_MAX_REQUEST_BYTES` (default 1 MiB) are refused with 413, declared or streamed.
@@ -48,6 +62,24 @@ All notable changes to Fusion OLAP Engine.
   an API key of at least 16 characters.
 
 ### Fixed
+- **A select-list alias was asked of the source as a column.** `... AS net ... ORDER BY net`
+  put `net` in the slice's field list; a source that checks fields (Warp answers HTTP 400) refused
+  the whole read. The analyzer reads names, not schemas, so the planner now keeps only names the
+  catalog says the table has. Found by running the scenarios against a real Warp, which the
+  in-process stand-in had hidden by ignoring unknown fields.
+- **A zoned timestamp lost its zone in a slice, and a query read wrong rows.** Arrow's
+  `timestamp[tz=UTC]` (what Warp exports for `timestamptz`) was stored as a plain `TIMESTAMP`,
+  so the query's own `WHERE ts >= '... +03:00'`, applied again locally, dropped the offset:
+  an Istanbul day counted 114 events instead of 134, and `AT TIME ZONE` gave wrong hours.
+  Zoned timestamps now stay `TIMESTAMPTZ`.
+- **An upper-case UUID found nothing.** Warp exports a UUID as text; kept as `VARCHAR`, the
+  slice compared `'F472...'` as a string after the source had matched it. A column the source
+  declares as `uuid` is now stored as `UUID`.
+- **Integers and decimals were widened.** Every integer became `BIGINT` and every decimal
+  `DECIMAL(38,9)`, so `date_col + smallint_col` (valid at the source) was a binder error and a
+  decimal median came back at a different scale. Columns now keep the width, precision and
+  scale the source declared; a parameterized type such as `numeric(12,2)` or `varchar(255)`
+  is read as one instead of falling back to `VARCHAR`.
 - **Queries that returned wrong rows without an error** on a table too big to
   load whole: `ANTI JOIN` (fetched only the matching rows), `LIMIT ... OFFSET`
   and `LIMIT` beside a condition the source cannot apply (the limit was read

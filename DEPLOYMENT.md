@@ -73,6 +73,7 @@ All settings are environment variables read once at startup by `Settings.from_en
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `FUSION_ENV` | `development` | One of `development`, `test`, `staging`, `production` (or `prod`); anything else refuses to start. `production` requires the API key and hides debug endpoints |
+| `FUSION_HOST` / `FUSION_PORT` | `0.0.0.0` / `9000` | Where `fusion-rest` listens (`--host` / `--port` override them) |
 | `FUSION_API_KEY` | *(required in production)* | API key for authentication; at least 16 characters in production |
 | `FUSION_CORS_ORIGINS` | `http://localhost:3000` | Comma-separated allowed origins |
 | `FUSION_RATE_LIMIT` | `100/minute` | Rate limit for the configured API key; per IP for requests without it, and separately per IP for failed key attempts on any path. Any form slowapi reads: `100/minute`, `10 per 5 minutes`, `1000/month`, several joined by `,` `;` or `\|` |

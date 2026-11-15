@@ -5,7 +5,9 @@ same data, because part of the query was applied at the source that only the
 whole query can apply.
 """
 
+import uuid
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -892,3 +894,68 @@ def test_paged_reads_are_ordered_by_the_primary_key(settings, scheduler):
         assert pages and all(p.get("sort") == "id:asc" for p in pages)
     finally:
         app.close()
+
+
+class TestTypesSurviveTheArrowExport:
+    """Warp exports a zoned timestamp as Arrow ``timestamp[tz=UTC]`` and a UUID as
+    text. Stored as a plain TIMESTAMP and VARCHAR, the slice's own WHERE, applied
+    again locally, read ``+03:00`` as UTC and compared a UUID as a string, so rows
+    the source had matched were dropped."""
+
+    EVENTS = [
+        {
+            "id": i,
+            "ts": datetime(2026, 10, 19, 12, 0, tzinfo=UTC) + timedelta(minutes=30 * i),
+            "u": str(uuid.UUID(int=i + 1)),
+        }
+        for i in range(200)
+    ]
+
+    @pytest.fixture
+    def events_app(self, settings, scheduler):
+        transport = FakeWarpTransport(
+            {"events": self.EVENTS},
+            database="ecommerce",
+            raw_query=False,
+            row_estimates={"events": 600_000},
+            column_types={"events": {"ts": "timestamp with time zone", "u": "uuid"}},
+        )
+        a = _e2e_app(settings, scheduler, transport)
+        yield a
+        a.close()
+
+    def test_a_zoned_range_keeps_its_offset(self, events_app):
+        sql = (
+            "SELECT COUNT(*) FROM ecommerce.events WHERE ts >= '2026-10-20 00:00:00+03:00' "
+            "AND ts < '2026-10-21 00:00:00+03:00'"
+        )
+        low = datetime(2026, 10, 19, 21, 0, tzinfo=UTC)
+        want = sum(1 for e in self.EVENTS if low <= e["ts"] < low + timedelta(days=1))
+        assert _rows(events_app, sql) == [(want,)]
+        held = events_app.catalog.slices_of("ecommerce.events")[0].table_name
+        types = {c.name: c.type for c in events_app.store.describe(held)}
+        assert types["ts"] == "TIMESTAMP WITH TIME ZONE"
+
+    def test_a_uuid_matches_in_any_case(self, events_app):
+        wanted = self.EVENTS[41]["u"]
+        sql = "SELECT id FROM ecommerce.events WHERE u = '{}'"
+        assert _rows(events_app, sql.format(wanted.upper())) == [(41,)]
+        assert _rows(events_app, sql.format(wanted)) == [(41,)]
+
+
+class TestAliasesAreNotColumns:
+    """``ORDER BY net`` names a select-list alias. Sent to Warp as a field it was a 400,
+    and the whole read was refused."""
+
+    def test_a_select_alias_is_not_asked_of_the_source(self, big, factory):
+        sql = (
+            "SELECT cid, SUM(x) AS net, COUNT(*) AS n FROM db.big WHERE status = 'paid' "
+            "GROUP BY cid HAVING n > 1 ORDER BY net DESC, cid LIMIT 3"
+        )
+        assert len(_rows(big, sql)) == 3
+        asked = factory.sources["db"].calls_named("fetch_slice")[-1][2]
+        assert asked.columns == frozenset({"cid", "x", "status"})
+
+    def test_an_alias_in_order_by_does_not_widen_the_projection(self, big, factory):
+        _rows(big, "SELECT COUNT(*) AS n FROM db.big WHERE x = 1 ORDER BY n")
+        assert factory.sources["db"].calls_named("fetch_slice")[-1][2].columns == frozenset({"x"})

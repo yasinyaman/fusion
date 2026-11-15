@@ -1,6 +1,7 @@
 """Tests for the DuckDB AnalyticsStore adapter."""
 
 import threading
+from decimal import Decimal
 
 import pyarrow as pa
 import pytest
@@ -323,7 +324,7 @@ class TestStreamingIngest:
         )
         assert store.materialize_stream("s.t", stream, schema) == 2
         types = {c.name: c.type for c in store.describe("s.t")}
-        assert types["id"] == "BIGINT" and types["code"] == "VARCHAR"
+        assert types["id"] == "INTEGER" and types["code"] == "VARCHAR"
         assert store.execute("SELECT code FROM s.t ORDER BY id").rows == [("10",), ("abc",)]
 
     def test_arrow_reader_is_used_when_the_stream_offers_one(self, store):
@@ -491,3 +492,42 @@ def test_slice_table_names_with_dots_are_quoted_correctly(store):
     store.materialize_stream("db.orders__s_ab12cd34ef", ListRowStream.from_records([{"id": 1}]))
     assert store.count("db.orders__s_ab12cd34ef") == 1
     assert store.execute('SELECT id FROM "db"."orders__s_ab12cd34ef"').rows == [(1,)]
+
+
+class TestDeclaredTypes:
+    """A slice is stored in the types the source declared, not wider ones."""
+
+    @pytest.mark.parametrize(
+        ("declared", "stored"),
+        [
+            ("smallint", "SMALLINT"),
+            ("integer", "INTEGER"),
+            ("bigint", "BIGINT"),
+            ("numeric(12, 2)", "DECIMAL(12,2)"),
+            ("decimal(10,2)", "DECIMAL(10,2)"),
+            ("numeric(10)", "DECIMAL(10,0)"),
+            ("numeric(60, 2)", "DOUBLE"),
+            ("varchar(255)", "VARCHAR"),
+            ("timestamp(6) with time zone", "TIMESTAMP WITH TIME ZONE"),
+            ("uuid", "UUID"),
+        ],
+    )
+    def test_the_store_creates_the_declared_type(self, store, declared, stored):
+        store.create_schema("s")
+        schema = TableSchema([ColumnInfo("x", declared)])
+        store.materialize_stream("s.t", ListRowStream(RowSet.empty()), schema)
+        assert [c.type for c in store.describe("s.t")] == [stored]
+
+    def test_date_arithmetic_on_a_smallint_works_as_at_the_source(self, store):
+        store.create_schema("s")
+        schema = TableSchema([ColumnInfo("d", "date"), ColumnInfo("n", "smallint")])
+        rows = ListRowStream.from_records([{"d": "2026-10-01", "n": 30}])
+        store.materialize_stream("s.t", rows, schema)
+        assert store.execute("SELECT CAST(d + n AS VARCHAR) FROM s.t").rows == [("2026-10-31",)]
+
+    def test_a_decimal_median_rounds_to_the_columns_scale(self, store):
+        store.create_schema("s")
+        schema = TableSchema([ColumnInfo("x", "decimal(12,2)")])
+        rows = ListRowStream.from_records([{"x": Decimal("1.00")}, {"x": Decimal("1.01")}])
+        store.materialize_stream("s.t", rows, schema)
+        assert store.execute("SELECT MEDIAN(x) FROM s.t").rows == [(Decimal("1.00"),)]

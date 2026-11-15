@@ -15,7 +15,13 @@ from fusion.domain.errors import ConnectionError, QueryError
 from fusion.domain.identifiers import IDENTIFIER_RE
 from fusion.domain.models import RefreshSpec, TableRef, TableSchema, coerce_ref
 from fusion.domain.policy import MaterializationPolicy, TargetPlan
-from fusion.domain.slices import LoadedSlice, Predicate, PredicateOp, SliceSpec
+from fusion.domain.slices import (
+    LoadedSlice,
+    Predicate,
+    PredicateOp,
+    SliceSpec,
+    ingest_schema,
+)
 from fusion.ports.analytics_store import AnalyticsStore
 from fusion.ports.data_source import DataSource, PushdownCapable, SourceFactory
 from fusion.ports.scheduler import ScheduledJob, Scheduler
@@ -269,7 +275,7 @@ class SourceService:
         stream = source.fetch_slice(ref.table, spec, max_rows=max_rows)
         try:
             count = self._store.materialize_stream(
-                staging, stream, stream.schema or self._slice_schema(ref, spec)
+                staging, stream, ingest_schema(stream.schema, self._slice_schema(ref, spec))
             )
         except Exception:
             self._store.drop_table(staging)

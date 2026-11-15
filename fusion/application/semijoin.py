@@ -24,7 +24,7 @@ from fusion.domain.errors import QueryError
 from fusion.domain.identifiers import IDENTIFIER_RE
 from fusion.domain.models import TableRef, TableSchema
 from fusion.domain.policy import MaterializationPolicy, SemiJoinSpec, TargetPlan
-from fusion.domain.slices import LoadedSlice, Predicate, SliceSpec
+from fusion.domain.slices import LoadedSlice, Predicate, SliceSpec, ingest_schema
 from fusion.ports.analytics_store import AnalyticsStore
 from fusion.ports.data_source import DataSource
 
@@ -164,7 +164,7 @@ class SemiJoinExecutor:
                 stream = source.fetch_slice(ref.table, chunk_spec, max_rows=remaining)
                 if index == 0:
                     fetched = self._store.materialize_stream(
-                        staging, stream, stream.schema or self._slice_schema(ref, spec)
+                        staging, stream, ingest_schema(stream.schema, self._slice_schema(ref, spec))
                     )
                 else:
                     fetched = self._store.append_stream(staging, stream)
