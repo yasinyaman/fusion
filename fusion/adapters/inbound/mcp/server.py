@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
+from copy import deepcopy
 from typing import Any
 
 from fusion.application.app import FusionApp
@@ -20,19 +22,36 @@ def create_mcp_server(fusion: FusionApp, name: str = "fusion") -> Any:
     so the model gets a uniform, parseable shape.
     """
     from mcp.server.mcpserver import MCPServer
+    from mcp.server.mcpserver.tools import Tool
 
-    server = MCPServer(name)
     tools = fusion.tools
-    # The descriptions an OpenAI client gets, so both kinds of caller read the
-    # same contract (query_metrics carries the whole metric grammar).
-    descriptions = {d["name"]: d["description"] for d in TOOL_DEFINITIONS}
+    definitions = {d["name"]: d for d in TOOL_DEFINITIONS}
+    registered: list[Any] = []
 
-    @server.tool(description=descriptions["list_sources"])
+    def tool(fn: Callable[..., str]) -> Callable[..., str]:
+        """Register ``fn`` under the description and input schema an OpenAI client gets.
+
+        The schema mcp derives from the signature has names and types only, so
+        the parameter descriptions, the filter shape and its operators would
+        never reach an MCP client. Arguments are still validated against the
+        signature, which is why the two must name the same parameters.
+        """
+        definition = definitions[fn.__name__]
+        derived = Tool.from_function(fn, description=definition["description"])
+        published = definition["parameters"]
+        if set(derived.parameters.get("properties", {})) != set(
+            published.get("properties", {})
+        ) or set(derived.parameters.get("required", [])) != set(published.get("required", [])):
+            raise TypeError(f"MCP tool {fn.__name__!r} does not take the parameters it publishes")
+        registered.append(derived.model_copy(update={"parameters": deepcopy(published)}))
+        return fn
+
+    @tool
     def list_sources() -> str:
         """List all connected data sources and their tables with row counts."""
         return _dump(tools.execute("list_sources"))
 
-    @server.tool(description=descriptions["describe_table"])
+    @tool
     def describe_table(table: str) -> str:
         """Show detailed schema for a table (columns, types, row count).
 
@@ -40,12 +59,12 @@ def create_mcp_server(fusion: FusionApp, name: str = "fusion") -> Any:
         """
         return _dump(tools.execute("describe_table", {"table": table}))
 
-    @server.tool(description=descriptions["query_data"])
+    @tool
     def query_data(sql: str) -> str:
         """Execute an analytical SQL query on DuckDB. Only SELECT queries allowed. Max 100 rows."""
         return _dump(tools.execute("query_data", {"sql": sql}))
 
-    @server.tool(description=descriptions["search_data"])
+    @tool
     def search_data(table: str, filter_column: str, filter_value: str, limit: int = 20) -> str:
         """Search rows in a table matching a filter.
 
@@ -63,7 +82,7 @@ def create_mcp_server(fusion: FusionApp, name: str = "fusion") -> Any:
             )
         )
 
-    @server.tool(description=descriptions["aggregate_data"])
+    @tool
     def aggregate_data(table: str, group_by: str, agg_column: str, agg_func: str) -> str:
         """Run GROUP BY aggregation. agg_func: SUM, AVG, COUNT, MIN, or MAX."""
         return _dump(
@@ -78,34 +97,34 @@ def create_mcp_server(fusion: FusionApp, name: str = "fusion") -> Any:
             )
         )
 
-    @server.tool(description=descriptions["create_view"])
+    @tool
     def create_view(name: str, sql: str, refresh: str = "manual") -> str:
         """Create a materialized view (cached aggregation). refresh: 'manual', 'hourly', 'daily'."""
         return _dump(tools.execute("create_view", {"name": name, "sql": sql, "refresh": refresh}))
 
-    @server.tool(description=descriptions["list_views"])
+    @tool
     def list_views() -> str:
         """List all materialized views with refresh schedule and last refresh time."""
         return _dump(tools.execute("list_views"))
 
-    @server.tool(description=descriptions["refresh_view"])
+    @tool
     def refresh_view(name: str) -> str:
         """Manually refresh a materialized view to get latest data."""
         return _dump(tools.execute("refresh_view", {"name": name}))
 
-    @server.tool(description=descriptions["load_table"])
+    @tool
     def load_table(table: str, where: str | None = None, columns: list[str] | None = None) -> str:
         """Load a table, or only the rows and columns ``where``/``columns`` describe."""
         return _dump(
             tools.execute("load_table", {"table": table, "where": where, "columns": columns})
         )
 
-    @server.tool(description=descriptions["list_metrics"])
+    @tool
     def list_metrics(table: str | None = None) -> str:
         """Measures, dimensions, grains and transforms available for a table."""
         return _dump(tools.execute("list_metrics", {"table": table}))
 
-    @server.tool(description=descriptions["query_metrics"])
+    @tool
     def query_metrics(
         table: str,
         metrics: list[str],
@@ -129,9 +148,9 @@ def create_mcp_server(fusion: FusionApp, name: str = "fusion") -> Any:
             )
         )
 
-    @server.tool(description=descriptions["cache_stats"])
+    @tool
     def cache_stats() -> str:
         """Show query cache statistics: hit rate, entry count, memory usage."""
         return _dump(tools.execute("cache_stats"))
 
-    return server
+    return MCPServer(name, tools=registered)

@@ -62,6 +62,14 @@ All notable changes to Fusion OLAP Engine.
   an API key of at least 16 characters.
 
 ### Fixed
+- **MCP clients never saw a parameter description.** The MCP server published
+  the input schema `mcp` derives from each function's signature — names and
+  types only — so the 24 parameter descriptions in `TOOL_DEFINITIONS`, the
+  shape of a `query_metrics` filter and its operators (`eq`, `gte`, `in` …),
+  the `-` prefix of `order_by` and the `order_date:month` grain reached OpenAI
+  clients alone; a model on MCP had to learn them from an error. The server
+  now publishes the shared schema for every tool, and refuses to build if a
+  tool's signature and its published parameters name different things.
 - **A select-list alias was asked of the source as a column.** `... AS net ... ORDER BY net`
   put `net` in the slice's field list; a source that checks fields (Warp answers HTTP 400) refused
   the whole read. The analyzer reads names, not schemas, so the planner now keeps only names the

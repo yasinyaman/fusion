@@ -77,3 +77,50 @@ def test_tool_descriptions_are_the_shared_ones(server):
 
     expected = {d["name"]: d["description"] for d in TOOL_DEFINITIONS}
     assert {t.name: t.description for t in _await(server.list_tools())} == expected
+
+
+def test_input_schemas_are_the_shared_ones(server):
+    """Parameter descriptions and the filter shape reach an MCP client too."""
+    from fusion.application.tool_schemas import TOOL_DEFINITIONS
+
+    expected = {d["name"]: d["parameters"] for d in TOOL_DEFINITIONS}
+    published = {t.name: t.input_schema for t in _await(server.list_tools())}
+    assert published == expected
+    filters = published["query_metrics"]["properties"]["filters"]
+    assert "gte" in filters["items"]["properties"]["op"]["enum"]
+    assert published["query_metrics"]["properties"]["order_by"]["description"]
+
+
+def test_query_metrics_takes_the_published_filter_shape(server):
+    result = _await(
+        server.call_tool(
+            "query_metrics",
+            {
+                "table": "test_db.orders",
+                "metrics": ["amount:sum"],
+                "dimensions": ["product"],
+                "filters": [{"column": "amount", "op": "gte", "value": 75}],
+                "order_by": "-amount_sum",
+            },
+        )
+    )
+    payload = json.loads(_text(result))
+    assert [(r["product"], r["amount_sum"]) for r in payload["rows"]] == [
+        ("A", 300.0),
+        ("C", 150.0),
+        ("B", 75.0),
+    ]
+
+
+def test_a_tool_that_publishes_other_parameters_is_refused(app_with_data, monkeypatch):
+    from copy import deepcopy
+
+    from fusion.adapters.inbound.mcp import server as module
+
+    drifted = deepcopy(module.TOOL_DEFINITIONS)
+    next(d for d in drifted if d["name"] == "describe_table")["parameters"]["properties"][
+        "schema"
+    ] = {"type": "string"}
+    monkeypatch.setattr(module, "TOOL_DEFINITIONS", drifted)
+    with pytest.raises(TypeError, match="describe_table"):
+        create_mcp_server(app_with_data)
