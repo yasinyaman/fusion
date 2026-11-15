@@ -1,5 +1,12 @@
 # Fusion
 
+> [!IMPORTANT]
+> **Fusion continues as [Truejoin](https://github.com/yasinyaman/truejoin).** Warp, Fusion and
+> Stargate were merged into one open-source product: governed access to corporate databases for
+> AI agents, in one process. Fusion's DuckDB engine and agent tools live on there, now behind the caller's row rules and column masks, with an audit event for every query and a reviewed business vocabulary for questions in words.
+>
+> New development happens in Truejoin. Documentation: <https://yaman.dev/truejoin/>.
+
 **DuckDB-powered in-memory analytics engine with LLM tool support.**
 
 Fusion connects to PostgreSQL/MySQL databases through the [Warp](https://github.com/yasinyaman/warp) REST API, lazily loads the tables a query needs into DuckDB, and exposes 12 analytics tools to LLMs over MCP, a REST API and a Python SDK.
